@@ -68,6 +68,14 @@ const config: Config = {
         },
       };
     },
+    [
+      require.resolve('@easyops-cn/docusaurus-search-local'),
+      {
+        hashed: true,
+        language: ['en'],
+        docsRouteBasePath: '/',
+      },
+    ],
   ],
 
   themeConfig: {

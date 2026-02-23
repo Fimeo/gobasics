@@ -1,0 +1,8 @@
+{
+  "label": "Tooling & Performance",
+  "position": 7,
+  "link": {
+    "type": "generated-index",
+    "description": "Profiling with pprof, build tags, CGO overhead, and Go developer tooling."
+  }
+}

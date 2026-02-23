@@ -160,7 +160,7 @@ This randomization is deliberate. Before Go 1, map iteration happened to be some
 The randomization also has a security dimension: a predictable hash traversal order could assist attackers in crafting inputs that degrade hash table performance.
 
 :::note
-Maps are NOT safe for concurrent use. A concurrent read and write, or two concurrent writes, will be detected by the Go runtime and cause a fatal (unrecoverable) crash. See the [Map Concurrency](./map-concurrency) article for the full explanation and solutions.
+Maps are NOT safe for concurrent use. A concurrent read and write, or two concurrent writes, will be detected by the Go runtime and cause a fatal (unrecoverable) crash. See the [Map Concurrency](../concurrency/map-concurrency) article for the full explanation and solutions.
 :::
 
 ## Overflow Buckets and Performance Degradation

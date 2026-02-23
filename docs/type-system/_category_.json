@@ -1,0 +1,8 @@
+{
+  "label": "Type System",
+  "position": 4,
+  "link": {
+    "type": "generated-index",
+    "description": "Generics, interfaces, embedding, and receiver semantics in Go."
+  }
+}
