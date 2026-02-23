@@ -1,0 +1,299 @@
+---
+sidebar_position: 53
+title: "errgroup: Concurrent Tasks with Error Propagation"
+description: "How golang.org/x/sync/errgroup simplifies running concurrent goroutines that return errors, with automatic cancellation on first failure."
+---
+
+# errgroup: Concurrent Tasks with Error Propagation
+
+`sync.WaitGroup` coordinates goroutine completion but ignores return values — you need a mutex-protected slice to collect errors. `errgroup` (from `golang.org/x/sync`) solves exactly this: it runs a group of concurrent tasks, collects the first error, and optionally cancels all remaining work when one task fails. It is the standard pattern for concurrent work in production Go code.
+
+## The Problem errgroup Solves
+
+```go
+// Without errgroup: manual error collection
+var (
+    wg   sync.WaitGroup
+    mu   sync.Mutex
+    errs []error
+)
+for _, url := range urls {
+    wg.Add(1)
+    go func(u string) {
+        defer wg.Done()
+        if err := fetch(u); err != nil {
+            mu.Lock()
+            errs = append(errs, err)
+            mu.Unlock()
+        }
+    }(url)
+}
+wg.Wait()
+// Now pick the first error, or join them, etc.
+```
+
+With `errgroup`, this collapses to a clean pattern where error handling is built in.
+
+## Basic Usage
+
+```go
+package main
+
+import (
+	"fmt"
+	"golang.org/x/sync/errgroup"
+)
+
+func fetchURL(url string) error {
+	if url == "https://bad.example.com" {
+		return fmt.Errorf("failed to fetch %s: connection refused", url)
+	}
+	fmt.Printf("fetched %s\n", url)
+	return nil
+}
+
+func main() {
+	var g errgroup.Group
+
+	urls := []string{
+		"https://go.dev",
+		"https://pkg.go.dev",
+		"https://bad.example.com",
+		"https://golang.org",
+	}
+
+	for _, url := range urls {
+		url := url // capture (pre-Go 1.22)
+		// highlight-next-line
+		g.Go(func() error { // launch goroutine — errors collected automatically
+			return fetchURL(url)
+		})
+	}
+
+	// highlight-next-line
+	if err := g.Wait(); err != nil { // blocks until all goroutines finish
+		fmt.Println("first error:", err)
+	}
+}
+```
+
+`g.Go(f)` starts `f` in a new goroutine. `g.Wait()` blocks until all goroutines launched with `g.Go` have returned, then returns the **first non-nil error** (other errors are discarded). All goroutines always run to completion regardless of errors — unless you use the context variant.
+
+## errgroup with Context: Cancel on First Error
+
+`errgroup.WithContext` returns a group and a derived context. When any goroutine returns a non-nil error, the context is **cancelled** — all other goroutines can detect this and stop early:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"golang.org/x/sync/errgroup"
+)
+
+func work(ctx context.Context, id int, fail bool) error {
+	select {
+	case <-time.After(time.Duration(id) * 100 * time.Millisecond):
+		if fail {
+			return fmt.Errorf("worker %d failed", id)
+		}
+		fmt.Printf("worker %d done\n", id)
+		return nil
+	// highlight-next-line
+	case <-ctx.Done(): // exits early when another worker fails
+		fmt.Printf("worker %d cancelled\n", id)
+		return ctx.Err()
+	}
+}
+
+func main() {
+	// highlight-next-line
+	g, ctx := errgroup.WithContext(context.Background())
+
+	g.Go(func() error { return work(ctx, 1, false) })
+	g.Go(func() error { return work(ctx, 2, true) })  // this one fails
+	g.Go(func() error { return work(ctx, 3, false) })
+	g.Go(func() error { return work(ctx, 4, false) })
+
+	if err := g.Wait(); err != nil {
+		fmt.Println("error:", err)
+	}
+}
+```
+
+<codapi-snippet sandbox="go" editor="basic">
+</codapi-snippet>
+
+When worker 2 fails, the context is cancelled. Workers that check `ctx.Done()` exit early — they don't wait their full duration. `g.Wait()` returns the first error from worker 2 (context cancellation errors from other workers are also collected but only the first is returned).
+
+:::warning
+The context returned by `errgroup.WithContext` is cancelled when the **first error** occurs — or when all goroutines finish with nil errors. Do not use this context for work that must continue after a failure. If you need all workers to run to completion regardless of errors, use a plain `errgroup.Group` without context.
+:::
+
+## Limiting Concurrency
+
+By default, `errgroup` launches all goroutines immediately. For large batches, you often want a concurrency limit to avoid overwhelming downstream services. Use `g.SetLimit`:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"golang.org/x/sync/errgroup"
+)
+
+func process(ctx context.Context, item int) error {
+	fmt.Printf("processing %d\n", item)
+	return nil
+}
+
+func main() {
+	g, ctx := errgroup.WithContext(context.Background())
+	// highlight-next-line
+	g.SetLimit(3) // at most 3 goroutines running concurrently
+
+	for i := 0; i < 10; i++ {
+		item := i
+		// highlight-next-line
+		g.Go(func() error { // blocks if 3 are already running
+			return process(ctx, item)
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		fmt.Println("error:", err)
+	}
+	fmt.Println("all done")
+}
+```
+
+<codapi-snippet sandbox="go" editor="basic">
+</codapi-snippet>
+
+`g.SetLimit(n)` caps concurrent goroutines at `n`. `g.Go` blocks the **caller** until a slot is available — it doesn't launch all goroutines and then queue them. This makes it suitable for processing large input slices without spinning up thousands of goroutines upfront.
+
+## errgroup vs sync.WaitGroup
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+<Tabs>
+  <TabItem value="errgroup" label="errgroup" default>
+
+**Use when**:
+- Goroutines return errors that need to be propagated
+- You want automatic context cancellation on first failure
+- You need concurrency limiting (`SetLimit`)
+- The pattern is "run N tasks, succeed if all succeed, fail if any fail"
+
+```go
+g, ctx := errgroup.WithContext(parentCtx)
+for _, item := range items {
+    item := item
+    g.Go(func() error {
+        return process(ctx, item)
+    })
+}
+return g.Wait()
+```
+
+  </TabItem>
+  <TabItem value="wg" label="sync.WaitGroup">
+
+**Use when**:
+- Goroutines don't return errors (fire-and-forget)
+- You need to collect all errors, not just the first
+- You're using the WaitGroup as a latch for non-task coordination (signaling phase transitions, etc.)
+
+```go
+var wg sync.WaitGroup
+for _, item := range items {
+    wg.Add(1)
+    go func(item Item) {
+        defer wg.Done()
+        process(item) // errors handled internally
+    }(item)
+}
+wg.Wait()
+```
+
+  </TabItem>
+</Tabs>
+
+## Collecting All Errors
+
+`g.Wait()` returns only the **first** error. If you need all errors (e.g., for validation where you want to report every failure), combine `errgroup` with a mutex-protected slice or use a channel:
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
+)
+
+func validate(id int) error {
+	if id%3 == 0 {
+		return fmt.Errorf("item %d is invalid", id)
+	}
+	return nil
+}
+
+func main() {
+	var (
+		g    errgroup.Group
+		mu   sync.Mutex
+		errs []error
+	)
+
+	for i := 0; i < 9; i++ {
+		i := i
+		g.Go(func() error {
+			if err := validate(i); err != nil {
+				mu.Lock()
+				// highlight-next-line
+				errs = append(errs, err) // collect all errors
+				mu.Unlock()
+			}
+			return nil // return nil so g.Wait doesn't short-circuit
+		})
+	}
+
+	g.Wait()
+
+	if len(errs) > 0 {
+		fmt.Println("all errors:", errors.Join(errs...))
+	}
+}
+```
+
+<codapi-snippet sandbox="go" editor="basic">
+</codapi-snippet>
+
+The trick: return `nil` from the goroutine so `errgroup` doesn't cancel the context, and collect errors yourself. Then `errors.Join` (Go 1.20+) merges them into a single readable error.
+
+## Installation
+
+`errgroup` is in the extended standard library:
+
+```bash
+go get golang.org/x/sync/errgroup
+```
+
+It is maintained by the Go team and is safe for production use.
+
+## Key Takeaways
+
+- `errgroup.Group` runs goroutines concurrently and returns the first non-nil error from `g.Wait()`.
+- `errgroup.WithContext` returns a context that is cancelled when the first goroutine returns an error — pass this context to all goroutines so they can exit early.
+- `g.SetLimit(n)` caps concurrent goroutines at `n`; `g.Go` blocks the caller until a slot is free.
+- `g.Wait()` returns only the first error. To collect all errors, return `nil` from goroutines and collect errors into a mutex-protected slice.
+- Use `errgroup` over `sync.WaitGroup` whenever goroutines return errors; use `WaitGroup` for fire-and-forget goroutines or when you need all errors rather than just the first.

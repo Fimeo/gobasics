@@ -1,0 +1,8 @@
+{
+  "label": "Testing",
+  "position": 4,
+  "link": {
+    "type": "generated-index",
+    "description": "Table-driven tests, benchmarks, subtests, and Go's testing idioms."
+  }
+}

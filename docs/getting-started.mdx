@@ -9,15 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # Getting Started with Go Basics
 
-Welcome to **Go Basics** — a collection of in-depth articles on Go internals and best practices.
-
-:::tip What this site covers
-Each article dives deep into a specific Go topic — from goroutine scheduling to GC internals — with interactive code examples you can run right in the browser.
-:::
-
-## Interactive Go Code
-
-Every article includes runnable Go code powered by [Codapi](https://codapi.org). Click **Run** to execute:
+**Go Basics** is a collection of in-depth articles on Go internals, concurrency, the standard library, and best practices. Each article goes beyond surface-level explanations — you'll find runtime mechanics, Mermaid diagrams, and interactive code examples you can run directly in the browser.
 
 ```go
 package main
@@ -32,97 +24,161 @@ func main() {
 <codapi-snippet sandbox="go" editor="basic">
 </codapi-snippet>
 
-## Goroutine Scheduling Overview
+---
 
-Go uses a work-stealing scheduler built around three core abstractions:
+## What's Covered
 
-```mermaid
-graph LR
-    G1[Goroutine G1] --> P1[Processor P1]
-    G2[Goroutine G2] --> P1
-    G3[Goroutine G3] --> P2[Processor P2]
-    P1 --> M1[OS Thread M1]
-    P2 --> M2[OS Thread M2]
-    style P1 fill:#00ADD8,color:#fff
-    style P2 fill:#00ADD8,color:#fff
-```
+### Functions
+*Variadic parameters, closures, and the mechanics of function values.*
 
-- **G** (Goroutine): a lightweight thread managed by the Go runtime
-- **M** (Machine): an OS thread
-- **P** (Processor): a logical processor that mediates between G and M
+| Article | What you'll learn |
+|---|---|
+| [Variadic Functions](/docs/functions/variadic-functions) | How `...T` works, slice aliasing, forwarding patterns |
+| [Closures](/docs/functions/closures) | Variable capture by reference, loop capture bug, memoization |
 
-:::note
-`GOMAXPROCS` controls the number of **P**s, not the number of OS threads.
-:::
+---
 
-## Value vs Pointer Receivers
+### Concurrency
+*The full stack: scheduler, channels, synchronization primitives, and real-world patterns.*
+
+| Article | What you'll learn |
+|---|---|
+| [Concurrency vs. Parallelism](/docs/concurrency/concurrency-vs-parallelism) | The precise distinction, I/O-bound vs CPU-bound, GOMAXPROCS |
+| [Goroutine Scheduling](/docs/concurrency/goroutine-scheduling) | G/M/P model, work stealing, syscall handoff |
+| [Goroutine Preemption](/docs/concurrency/goroutine-preemption) | Why tight CPU loops can starve other goroutines |
+| [Go Memory Model](/docs/concurrency/go-memory-model) | Happens-before, sequentially consistent atomics |
+| [Happens-Before](/docs/concurrency/happens-before) | Mutex, channels, atomics, WaitGroup guarantees |
+| [Data Races](/docs/concurrency/data-races) | Why "it works on my machine" is a lie |
+| [Race Detector](/docs/concurrency/race-detector) | What it catches and what it can't prove |
+| [Channel Internals](/docs/concurrency/channel-internals) | Buffered vs unbuffered, blocking semantics, hchan layout |
+| [select Behavior](/docs/concurrency/select-behavior) | Fairness, pseudo-random case picking |
+| [Closing Channels](/docs/concurrency/closing-channels) | Who closes, what receivers observe |
+| [Nil Channels](/docs/concurrency/nil-channels) | The disabled-case pattern |
+| [Context Cancellation](/docs/concurrency/context-cancellation) | Deadlines, propagation, cleanup patterns |
+| [Concurrency Patterns](/docs/concurrency/concurrency-patterns) | Pipeline, fan-out, fan-in, done channel |
+| [sync.WaitGroup](/docs/concurrency/waitgroups) | Add/Done/Wait rules, copy gotcha, error collection |
+| [sync.Once](/docs/concurrency/sync-once) | Internals, common deadlock patterns |
+| [sync.Pool](/docs/concurrency/sync-pool) | What it is, what it isn't, GC interaction |
+| [atomic vs Mutex vs Channels](/docs/concurrency/atomic-vs-mutex-vs-channels) | Decision guide for synchronization |
+| [GOMAXPROCS](/docs/concurrency/gomaxprocs) | What it really controls |
+| [Map Concurrency](/docs/concurrency/map-concurrency) | Why concurrent writes crash Go |
+| [Goroutine Leaks](/docs/concurrency/goroutine-leaks) | Causes, detection with pprof and goleak, prevention |
+| [errgroup](/docs/concurrency/errgroup) | Concurrent tasks with error propagation and cancellation |
+
+---
+
+### Internals
+*How the Go runtime and compiler work under the hood.*
+
+| Article | What you'll learn |
+|---|---|
+| [Packages and Modules](/docs/internals/packages) | Package vs module, visibility rules, init, blank imports |
+| [Pointers](/docs/internals/pointers) | Value vs pointer semantics, nil, escape analysis, no arithmetic |
+| [Memory Management](/docs/internals/memory-management) | Stack vs heap, TCMalloc allocator, escape triggers |
+| [Escape Analysis](/docs/internals/escape-analysis) | Stack vs heap allocation, reading `-gcflags="-m"` output |
+| [Slice Internals](/docs/internals/slices-internals) | len/cap, append growth, shared backing arrays |
+| [Map Internals](/docs/internals/map-internals) | Hashing, buckets, growth, iteration randomness |
+| [String Immutability](/docs/internals/string-immutability) | `string`/`[]byte` conversions and allocations |
+| [defer Internals](/docs/internals/defer-internals) | Stack, argument evaluation, hot loop cost |
+| [GC Basics](/docs/internals/gc-basics) | Tri-color marking, STW phases |
+| [Write Barrier](/docs/internals/write-barrier) | Why it exists, performance impact |
+| [Memory Alignment](/docs/internals/memory-alignment) | False sharing in structs |
+| [init() Order](/docs/internals/init-order) | Package init sequence and traps |
+
+---
+
+### Type System
+*Interfaces, generics, embedding, and the type machinery beneath them.*
+
+| Article | What you'll learn |
+|---|---|
+| [Interfaces Under the Hood](/docs/type-system/interfaces-under-the-hood) | itab, dynamic type, dynamic value |
+| [Empty Interface](/docs/type-system/empty-interface) | `any`, type assertions, cost |
+| [Value vs Pointer Receivers](/docs/type-system/value-vs-pointer-receivers) | Method sets, interface satisfaction |
+| [Embedding](/docs/type-system/embedding) | Promotion, ambiguity, zero values |
+| [Generics](/docs/type-system/generics) | Type parameters, constraints, instantiation |
+
+---
+
+### Error Handling
+*Idiomatic error patterns, panic mechanics, and clean shutdown.*
+
+| Article | What you'll learn |
+|---|---|
+| [Error Handling Patterns](/docs/error-handling/error-handling) | Wrapping, `errors.Is`/`As`, sentinel errors |
+| [panic and recover](/docs/error-handling/panic-recover) | Rules, goroutine boundaries, server recovery pattern |
+| [Graceful Shutdown](/docs/error-handling/graceful-shutdown) | OS signals, context cancellation, draining workers |
+
+---
+
+### Testing
+*Table-driven tests, benchmarks, and Go's testing idioms.*
+
+| Article | What you'll learn |
+|---|---|
+| [Table-Driven Tests](/docs/testing/table-driven-tests) | `t.Run`, subtests, benchmarks, `t.Helper`, coverage |
+
+---
+
+### Standard Library
+*The I/O model, HTTP internals, JSON pitfalls, and timers.*
+
+| Article | What you'll learn |
+|---|---|
+| [io.Reader and io.Writer](/docs/standard-library/io-reader-writer) | Composition model, `io.Copy`, `bufio`, HTTP bodies |
+| [time.Timer and time.Ticker](/docs/standard-library/time-timer-ticker) | Stop/Reset pitfalls, `time.After` leaks, ticker drops |
+| [net/http Transport](/docs/standard-library/http-transport) | Keep-alive, connection pooling, timeouts |
+| [http.Client Reuse](/docs/standard-library/http-client-reuse) | Why per-request clients are a bug |
+| [JSON Encoding Pitfalls](/docs/standard-library/json-encoding-pitfalls) | Numbers, `interface{}`, allocations |
+
+---
+
+### Tooling
+*Profiling, build system, and the C boundary.*
+
+| Article | What you'll learn |
+|---|---|
+| [pprof Basics](/docs/tooling/pprof-basics) | CPU, heap, goroutine, mutex profiling |
+| [Build Tags](/docs/tooling/build-tags) | Why builds can silently change |
+| [cgo Overhead](/docs/tooling/cgo-overhead) | Why crossing the C boundary is expensive |
+
+---
+
+## How to Read This Site
+
+Articles are self-contained — you can read in any order. That said, some natural reading paths:
 
 <Tabs>
-  <TabItem value="value" label="Value Receiver" default>
+  <TabItem value="concurrency" label="Concurrency deep dive" default>
 
-```go
-package main
-
-import "fmt"
-
-type Point struct {
-	X, Y int
-}
-
-// highlight-next-line
-func (p Point) Translate(dx, dy int) Point {
-	return Point{p.X + dx, p.Y + dy}
-}
-
-func main() {
-	p := Point{1, 2}
-	p2 := p.Translate(3, 4)
-	fmt.Println(p, "→", p2)
-}
-```
-
-<codapi-snippet sandbox="go" editor="basic">
-</codapi-snippet>
-
-Value receivers get a **copy** of the struct. The original is never modified.
+1. [Goroutine Scheduling](/docs/concurrency/goroutine-scheduling) — understand the G/M/P model first
+2. [Concurrency vs. Parallelism](/docs/concurrency/concurrency-vs-parallelism) — clear up the fundamental distinction
+3. [Channel Internals](/docs/concurrency/channel-internals) — how channels are implemented
+4. [Go Memory Model](/docs/concurrency/go-memory-model) + [Happens-Before](/docs/concurrency/happens-before) — the formal rules
+5. [Data Races](/docs/concurrency/data-races) + [Race Detector](/docs/concurrency/race-detector) — how to find bugs
+6. [Concurrency Patterns](/docs/concurrency/concurrency-patterns) — pipeline, fan-out, fan-in
+7. [Goroutine Leaks](/docs/concurrency/goroutine-leaks) — production survival
 
   </TabItem>
-  <TabItem value="pointer" label="Pointer Receiver">
+  <TabItem value="performance" label="Performance & internals">
 
-```go
-package main
+1. [Escape Analysis](/docs/internals/escape-analysis) — stack vs heap
+2. [Memory Management](/docs/internals/memory-management) — the allocator
+3. [GC Basics](/docs/internals/gc-basics) + [Write Barrier](/docs/internals/write-barrier) — GC mechanics
+4. [Memory Alignment](/docs/internals/memory-alignment) — struct layout and false sharing
+5. [sync.Pool](/docs/concurrency/sync-pool) — reducing allocator pressure
+6. [pprof Basics](/docs/tooling/pprof-basics) — profiling in practice
 
-import "fmt"
+  </TabItem>
+  <TabItem value="production" label="Production readiness">
 
-type Point struct {
-	X, Y int
-}
-
-// highlight-next-line
-func (p *Point) Translate(dx, dy int) {
-	p.X += dx
-	p.Y += dy
-}
-
-func main() {
-	p := Point{1, 2}
-	p.Translate(3, 4)
-	fmt.Println(p)
-}
-```
-
-<codapi-snippet sandbox="go" editor="basic">
-</codapi-snippet>
-
-Pointer receivers modify the **original** struct in place.
+1. [Error Handling Patterns](/docs/error-handling/error-handling) — idiomatic errors
+2. [Context Cancellation](/docs/concurrency/context-cancellation) — deadlines and propagation
+3. [Graceful Shutdown](/docs/error-handling/graceful-shutdown) — clean process lifecycle
+4. [Goroutine Leaks](/docs/concurrency/goroutine-leaks) — how to detect and prevent them
+5. [http.Client Reuse](/docs/standard-library/http-client-reuse) — connection pool hygiene
+6. [errgroup](/docs/concurrency/errgroup) — concurrent work with error propagation
+7. [Table-Driven Tests](/docs/testing/table-driven-tests) — testing idioms
 
   </TabItem>
 </Tabs>
-
-:::warning Mixing receiver types
-If any method on a type uses a pointer receiver, consider using pointer receivers for **all** methods on that type. Mixing can lead to subtle bugs with interface satisfaction.
-:::
-
-## What's Next?
-
-Explore the articles in the sidebar — each one covers a topic from the curated list of Go topics with the same depth and interactive examples shown here.

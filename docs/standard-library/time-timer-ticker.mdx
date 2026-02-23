@@ -1,0 +1,304 @@
+---
+sidebar_position: 52
+title: "time.Timer and time.Ticker: Precise Timing and Leak Traps"
+description: "How time.Timer and time.Ticker work, the Stop/Reset pitfalls that cause missed ticks or goroutine leaks, and when to use each."
+---
+
+# time.Timer and time.Ticker: Precise Timing and Leak Traps
+
+Go's `time` package provides two primitives for time-based control flow: `time.Timer` for one-shot events and `time.Ticker` for recurring intervals. Both deliver time values through channels, which makes them compose naturally with `select`. But both have documented quirks around `Stop` and `Reset` that trip up experienced Go developers and cause goroutine leaks or missed events.
+
+## time.After: The Easy Way (with a Catch)
+
+`time.After(d)` is the simplest form: it returns a channel that receives one value after duration `d`. It is sugar over `time.NewTimer`:
+
+```go
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	fmt.Println("waiting...")
+	// highlight-next-line
+	<-time.After(500 * time.Millisecond) // blocks until 500ms has passed
+	fmt.Println("done")
+}
+```
+
+<codapi-snippet sandbox="go" editor="basic">
+</codapi-snippet>
+
+**The catch**: `time.After` allocates a new `time.Timer` under the hood. That timer (and its goroutine) is only garbage collected after it fires — not when your code stops selecting on it. Inside a loop or high-frequency code path, this creates a steady accumulation of live timers:
+
+```go
+// LEAKY — new timer every iteration, old ones live until they fire
+for {
+    select {
+    case <-time.After(1 * time.Second): // new allocation every loop
+        doWork()
+    case <-quit:
+        return
+    }
+}
+```
+
+**Rule**: `time.After` is fine for one-shot delays at the top level. Never use it inside a loop.
+
+## time.Timer: One-Shot with Manual Control
+
+`time.NewTimer(d)` creates a timer that fires once. You can stop it before it fires:
+
+```go
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	timer := time.NewTimer(2 * time.Second)
+	// highlight-next-line
+	defer timer.Stop() // always Stop — prevents leak if timer hasn't fired
+
+	select {
+	case t := <-timer.C:
+		fmt.Println("timer fired at", t.Format(time.TimeOnly))
+	case <-time.After(500 * time.Millisecond):
+		fmt.Println("gave up waiting")
+		// timer.Stop() called by defer
+	}
+}
+```
+
+<codapi-snippet sandbox="go" editor="basic">
+</codapi-snippet>
+
+### Stopping a Timer Correctly
+
+`timer.Stop()` prevents the timer from firing. It returns `true` if the timer was stopped before firing, `false` if it had already fired. When `Stop()` returns `false`, the channel may already have a value queued:
+
+```go
+if !timer.Stop() {
+    // highlight-next-line
+    <-timer.C // drain the channel to avoid a stale value on next Reset
+}
+```
+
+You must drain the channel before calling `Reset` if the timer has already fired. Otherwise `Reset` arms a new timer while the old value sits in the channel — your next `<-timer.C` reads the stale value immediately.
+
+### Resetting a Timer
+
+```go
+// Correct Reset pattern:
+if !timer.Stop() {
+    select {
+    case <-timer.C: // drain if it fired
+    default:
+    }
+}
+// highlight-next-line
+timer.Reset(newDuration) // now safe to reset
+```
+
+The `select` with `default` avoids blocking if the channel was already drained. This pattern is verbose but correct.
+
+:::warning
+`timer.Reset(d)` documentation says to drain the channel before resetting only if the timer has already expired **and** the program has not yet received from the timer channel. In practice, the safe pattern above (Stop → drain with select/default → Reset) is always correct and is simpler to reason about than tracking timer state manually.
+:::
+
+## time.Ticker: Recurring Intervals
+
+`time.NewTicker(d)` fires at every interval `d`. Unlike `time.Timer`, it fires repeatedly until stopped:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+func main() {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// highlight-next-line
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop() // ALWAYS stop the ticker
+
+	count := 0
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Printf("done after %d ticks\n", count)
+			return
+		case t := <-ticker.C:
+			count++
+			fmt.Printf("tick %d at %s\n", count, t.Format("15:04:05.000"))
+		}
+	}
+}
+```
+
+<codapi-snippet sandbox="go" editor="basic">
+</codapi-snippet>
+
+`defer ticker.Stop()` is mandatory — a ticker runs forever and its goroutine never exits until `Stop` is called.
+
+### Tickers Don't Block the Sender
+
+If your tick handler is slower than the tick interval, the ticker does not queue up missed ticks. The channel has a buffer of 1 — if the buffer is full when a tick fires, the tick is **dropped silently**:
+
+```go
+ticker := time.NewTicker(100 * time.Millisecond)
+defer ticker.Stop()
+
+for range ticker.C {
+    time.Sleep(500 * time.Millisecond) // slower than tick rate
+    // ticks are dropped — you won't process every tick
+    doWork()
+}
+```
+
+This is intentional: it prevents unbounded queue growth when the consumer is slow. If you need to process every event, use a buffered channel and a separate sender goroutine rather than a ticker.
+
+## time.After vs time.NewTimer vs time.NewTicker
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+<Tabs>
+  <TabItem value="after" label="time.After" default>
+
+```go
+<-time.After(d)
+```
+
+**Use when**: simple one-shot delay; not inside a loop.
+
+**Pros**: single line, readable.
+
+**Cons**: allocates a timer that lives until it fires; not stoppable.
+
+```go
+// Good: one-shot timeout in a select
+select {
+case result := <-ch:
+    process(result)
+case <-time.After(5 * time.Second):
+    return errors.New("timeout")
+}
+```
+
+  </TabItem>
+  <TabItem value="timer" label="time.NewTimer">
+
+```go
+t := time.NewTimer(d)
+defer t.Stop()
+```
+
+**Use when**: one-shot timeout that must be stoppable or resettable.
+
+**Pros**: stoppable (no leak); resettable for repeated use.
+
+**Cons**: Stop/Reset semantics require care (drain the channel).
+
+```go
+// Good: timeout that must be cancelled on success
+timer := time.NewTimer(5 * time.Second)
+defer timer.Stop()
+select {
+case result := <-ch:
+    timer.Stop()
+    process(result)
+case <-timer.C:
+    return errors.New("timeout")
+}
+```
+
+  </TabItem>
+  <TabItem value="ticker" label="time.NewTicker">
+
+```go
+t := time.NewTicker(d)
+defer t.Stop()
+```
+
+**Use when**: periodic/recurring work at a fixed interval.
+
+**Pros**: fires repeatedly without re-arming.
+
+**Cons**: must always be stopped; drops ticks when consumer is slow.
+
+```go
+// Good: periodic health check
+ticker := time.NewTicker(30 * time.Second)
+defer ticker.Stop()
+for {
+    select {
+    case <-ctx.Done():
+        return
+    case <-ticker.C:
+        healthCheck()
+    }
+}
+```
+
+  </TabItem>
+</Tabs>
+
+## Timeout Pattern with context.WithTimeout
+
+For operation timeouts, prefer `context.WithTimeout` over timers — it propagates through the call stack automatically:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+func fetchData(ctx context.Context) error {
+	// highlight-next-line
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	select {
+	case <-time.After(3 * time.Second): // simulates slow operation
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("fetchData: %w", ctx.Err())
+	}
+}
+
+func main() {
+	err := fetchData(context.Background())
+	fmt.Println(err)
+}
+```
+
+<codapi-snippet sandbox="go" editor="basic">
+</codapi-snippet>
+
+`context.WithTimeout` internally uses a `time.Timer` and cancels the context when it fires. Using it means all context-aware operations (HTTP calls, database queries, `select` on `ctx.Done()`) will respect the timeout without any extra wiring.
+
+:::tip
+For most operation timeouts, `context.WithTimeout` is cleaner than `time.NewTimer`. Use `time.NewTimer`/`time.NewTicker` directly when you need to manage the timing machinery itself — implementing retry loops, rate limiters, backoff, or periodic jobs.
+:::
+
+## Key Takeaways
+
+- `time.After(d)` is a one-shot convenience — safe at the top level, **leaks inside loops** because the timer lives until it fires.
+- `time.NewTimer(d)` is a stoppable one-shot timer. Always `defer timer.Stop()`. Before `Reset`, drain the channel: `Stop(); select { case <-timer.C: default: }; Reset(d)`.
+- `time.NewTicker(d)` fires repeatedly. Always `defer ticker.Stop()` — a ticker never stops on its own.
+- Tickers silently drop ticks when the consumer is slower than the interval; channel buffer is 1.
+- For operation timeouts, prefer `context.WithTimeout` — it propagates through the entire call stack and works with all context-aware APIs.
+- Use `time.NewTicker` for periodic jobs; use `time.NewTimer` for retry/backoff loops; use `context.WithTimeout` for I/O operation deadlines.

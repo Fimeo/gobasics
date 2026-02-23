@@ -1,0 +1,310 @@
+---
+sidebar_position: 49
+title: "Testing in Go: Table-Driven Tests, Subtests, and Benchmarks"
+description: "How to write idiomatic Go tests — table-driven test structure, subtests with t.Run, benchmarks with testing.B, and the helper/cleanup utilities."
+---
+
+# Testing in Go: Table-Driven Tests, Subtests, and Benchmarks
+
+Go ships with a testing framework in the standard library. There are no third-party test runners required. The `testing` package provides everything for unit tests, subtests, benchmarks, and fuzzing. The canonical pattern — **table-driven tests** — makes it easy to cover many cases with minimal boilerplate and produces clear failure output.
+
+## The Basics: func TestXxx
+
+A test file ends in `_test.go`. The `go test` tool compiles and runs it. Each test function has the signature `func TestXxx(t *testing.T)`:
+
+```go
+package math
+
+import "testing"
+
+func Abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func TestAbs(t *testing.T) {
+	got := Abs(-5)
+	want := 5
+	if got != want {
+		// highlight-next-line
+		t.Errorf("Abs(-5) = %d, want %d", got, want)
+	}
+}
+```
+
+- `t.Errorf` marks the test as failed but continues executing.
+- `t.Fatalf` marks the test as failed and stops the current test function immediately.
+- `t.Logf` logs a message only when the test fails or `-v` is passed.
+
+## Table-Driven Tests
+
+Rather than writing one `TestXxx` function per input, Go idiom puts all cases in a slice of structs:
+
+```go
+package math
+
+import "testing"
+
+func TestAbsTable(t *testing.T) {
+	tests := []struct {
+		name  string
+		input int
+		want  int
+	}{
+		{"positive", 5, 5},
+		{"negative", -5, 5},
+		{"zero", 0, 0},
+		{"min int32", -2147483648, 2147483648},
+	}
+
+	for _, tt := range tests {
+		// highlight-next-line
+		t.Run(tt.name, func(t *testing.T) {
+			got := Abs(tt.input)
+			if got != tt.want {
+				t.Errorf("Abs(%d) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+```
+
+`t.Run` creates a **subtest**. Each case runs as `TestAbsTable/positive`, `TestAbsTable/negative`, etc. You can run a single case:
+
+```bash
+go test -run TestAbsTable/negative ./...
+```
+
+Benefits of table-driven tests:
+- Adding a new case is one line in the slice.
+- Failures report which case failed, not just which assertion.
+- Each subtest is independently runnable and parallelizable.
+
+## Subtests and t.Parallel
+
+Subtests can run in parallel within a test function using `t.Parallel()`. This is safe when cases are independent:
+
+```go
+func TestProcessParallel(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"trim", "  hello  ", "hello"},
+		{"upper", "hello", "HELLO"},
+		{"empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture range variable (required pre-Go 1.22)
+		t.Run(tt.name, func(t *testing.T) {
+			// highlight-next-line
+			t.Parallel() // this subtest can run concurrently with others
+			got := process(tt.input)
+			if got != tt.want {
+				t.Errorf("process(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func process(s string) string { return s } // placeholder
+```
+
+:::warning
+Before Go 1.22, always capture the loop variable with `tt := tt` before calling `t.Run` with a closure. If you don't, all parallel subtests will use the same `tt` value — the last one from the loop. Go 1.22+ fixes this automatically.
+:::
+
+## t.Helper and t.Cleanup
+
+### t.Helper
+
+Mark assertion helpers with `t.Helper()`. Without it, failure messages point to the helper function, not the test that called it:
+
+```go
+package math
+
+import "testing"
+
+func assertEqual(t *testing.T, got, want int) {
+	// highlight-next-line
+	t.Helper() // failure line will point to the caller, not here
+	if got != want {
+		t.Errorf("got %d, want %d", got, want)
+	}
+}
+
+func TestWithHelper(t *testing.T) {
+	assertEqual(t, Abs(-3), 3) // failure message points to this line
+	assertEqual(t, Abs(0), 0)
+}
+```
+
+### t.Cleanup
+
+`t.Cleanup` registers a function to run when the test (and all its subtests) finish — whether it passes or fails. It replaces the `defer` pattern and composes correctly with subtests:
+
+```go
+func TestWithTempFile(t *testing.T) {
+	f, err := os.CreateTemp("", "test-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// highlight-next-line
+	t.Cleanup(func() { os.Remove(f.Name()) }) // runs after test, even on failure
+
+	// ... use f in the test
+	_ = f
+}
+```
+
+`t.TempDir()` is even simpler — it creates a temporary directory that is automatically removed after the test:
+
+```go
+func TestWithTempDir(t *testing.T) {
+	dir := t.TempDir() // auto-deleted after test
+	path := filepath.Join(dir, "config.json")
+	_ = path
+}
+```
+
+## Benchmarks
+
+Benchmark functions have the signature `func BenchmarkXxx(b *testing.B)`. They are only run when you pass `-bench`:
+
+```go
+package math
+
+import "testing"
+
+func BenchmarkAbs(b *testing.B) {
+	// highlight-next-line
+	for i := 0; i < b.N; i++ { // b.N is set by the framework to produce stable timing
+		Abs(-42)
+	}
+}
+```
+
+Run benchmarks:
+
+```bash
+go test -bench=. -benchmem ./...
+```
+
+Output:
+```
+BenchmarkAbs-8    1000000000    0.234 ns/op    0 B/op    0 allocs/op
+```
+
+- `-benchmem` adds `B/op` (bytes allocated per operation) and `allocs/op` (heap allocations per operation) — crucial for performance work.
+- `b.N` is automatically tuned so the benchmark runs for at least 1 second.
+- Reset the timer if you have setup code: `b.ResetTimer()`.
+
+```go
+func BenchmarkProcess(b *testing.B) {
+	data := generateLargeInput() // setup — don't count this
+	b.ResetTimer()               // start timing here
+	// highlight-next-line
+	b.ReportAllocs()             // equivalent to -benchmem for this benchmark
+
+	for i := 0; i < b.N; i++ {
+		processData(data)
+	}
+}
+
+func generateLargeInput() []int { return make([]int, 10000) }
+func processData(data []int)    {}
+```
+
+## Test Coverage
+
+```bash
+go test -cover ./...                          # print coverage percentage
+go test -coverprofile=cover.out ./...         # write coverage profile
+go tool cover -html=cover.out                 # open in browser
+```
+
+Coverage shows which lines were executed by tests. Aim for high coverage on business logic, but don't chase 100% at the cost of test quality — a test that exercises every line without asserting behavior is worthless.
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+## Running Tests
+
+<Tabs>
+  <TabItem value="common" label="Common commands" default>
+
+```bash
+go test ./...                    # run all tests in all packages
+go test -v ./...                 # verbose: print each test name
+go test -run TestFoo ./...       # run only tests matching "TestFoo"
+go test -run TestFoo/bar ./...   # run only the "bar" subtest
+go test -count=1 ./...           # disable test result caching
+go test -race ./...              # run with race detector
+go test -short ./...             # skip long-running tests (check t.Short())
+```
+
+  </TabItem>
+  <TabItem value="bench" label="Benchmark commands">
+
+```bash
+go test -bench=. ./...                        # run all benchmarks
+go test -bench=BenchmarkAbs ./...             # run specific benchmark
+go test -bench=. -benchmem ./...              # with allocation stats
+go test -bench=. -benchtime=10s ./...         # run for 10 seconds
+go test -bench=. -count=5 ./...               # run each benchmark 5 times
+go test -bench=. -cpu=1,2,4 ./...             # run with GOMAXPROCS=1,2,4
+```
+
+  </TabItem>
+</Tabs>
+
+:::tip
+Use `-count=1` in CI to disable the test cache. Go caches successful test results and skips re-running them if source files haven't changed — useful locally, but CI should always run fresh.
+:::
+
+## Test File Conventions
+
+| File | Package declaration | Purpose |
+|---|---|---|
+| `foo_test.go` with `package foo` | Same package | White-box tests — access unexported identifiers |
+| `foo_test.go` with `package foo_test` | External test package | Black-box tests — only exported API |
+| `example_test.go` with `func ExampleFoo()` | Either | Runnable examples shown in godoc |
+
+The black-box style (`package foo_test`) is preferred for public APIs because it tests only what callers can see, preventing tests from relying on implementation details.
+
+## Example Functions
+
+Example functions serve as runnable documentation. They are compiled and executed by `go test`:
+
+```go
+package math_test
+
+import (
+	"fmt"
+	"testing" // only needed if using testing.T
+)
+
+func ExampleAbs() {
+	fmt.Println(Abs(-5))
+	fmt.Println(Abs(3))
+	// Output:
+	// 5
+	// 3
+}
+```
+
+The `// Output:` comment is the expected output. If the function prints something different, the test fails. These examples appear in `go doc` and `pkg.go.dev` documentation automatically.
+
+## Key Takeaways
+
+- Test functions are `func TestXxx(t *testing.T)` in `_test.go` files; run with `go test`.
+- **Table-driven tests** put all cases in a slice of structs and iterate with `t.Run` — the Go standard idiom.
+- `t.Errorf` marks failure and continues; `t.Fatalf` marks failure and stops the current function.
+- Mark assertion helpers with `t.Helper()` so failure lines point to the call site, not the helper.
+- `t.Cleanup` registers teardown functions that run even if the test fails; `t.TempDir()` handles temporary directories.
+- Benchmarks (`func BenchmarkXxx(b *testing.B)`) run with `go test -bench=. -benchmem`; `b.N` is auto-tuned.
+- Run tests with `-race` regularly — the race detector catches data races that are otherwise invisible.
