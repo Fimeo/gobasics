@@ -32,6 +32,7 @@ const config: Config = {
   ],
   scripts: [
     {src: 'https://unpkg.com/@antonz/codapi@0.20.0/dist/snippet.js', defer: true},
+    {src: 'https://plausible.appro.ovh/js/script.js', defer: true, 'data-domain': 'gobasics.appro.ovh'},
   ],
 
   presets: [
