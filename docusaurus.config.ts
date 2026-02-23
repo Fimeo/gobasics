@@ -27,13 +27,14 @@ const config: Config = {
 
   themes: ['@docusaurus/theme-mermaid'],
 
-  stylesheets: [
-    {href: 'https://unpkg.com/@antonz/codapi@0.20.0/dist/snippet.css'},
-  ],
+  // Plausible analytics only — Codapi is loaded via clientModules after React hydration
+  // to avoid React #418 (custom element upgrade racing with hydration).
   scripts: [
-    {src: 'https://unpkg.com/@antonz/codapi@0.20.0/dist/snippet.js', defer: true},
     {src: 'https://plausible.appro.ovh/js/script.js', defer: true, 'data-domain': 'gobasics.appro.ovh'},
   ],
+
+  // Load Codapi after React has hydrated the page (prevents hydration mismatch)
+  clientModules: ['./src/clientModules/codapi.ts'],
 
   presets: [
     [
@@ -51,6 +52,24 @@ const config: Config = {
     ],
   ],
 
+  plugins: [
+    // Suppress the harmless "Critical dependency" warning from mermaid → monaco-editor types.
+    // The warning comes from vscode-languageserver-types using dynamic require() inside mermaid's
+    // bundle. It only affects the server-side compilation chunk and has no runtime impact.
+    function suppressMermaidWarning() {
+      return {
+        name: 'suppress-mermaid-webpack-warning',
+        configureWebpack() {
+          return {
+            ignoreWarnings: [
+              {module: /vscode-languageserver-types/},
+            ],
+          };
+        },
+      };
+    },
+  ],
+
   themeConfig: {
     colorMode: {
       respectPrefersColorScheme: true,
@@ -64,10 +83,26 @@ const config: Config = {
           position: 'left',
           label: 'Articles',
         },
+        {
+          href: 'https://github.com/Fimeo/gobasics',
+          label: 'GitHub',
+          position: 'right',
+        },
       ],
     },
     footer: {
       style: 'dark',
+      links: [
+        {
+          title: 'Source',
+          items: [
+            {
+              label: 'GitHub',
+              href: 'https://github.com/Fimeo/gobasics',
+            },
+          ],
+        },
+      ],
       copyright: `Copyright © ${new Date().getFullYear()} Go Basics. Built with Docusaurus.`,
     },
     prism: {
