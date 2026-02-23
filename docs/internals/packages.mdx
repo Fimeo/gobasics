@@ -139,7 +139,7 @@ Key rules about `init`:
 - `init` in imported packages runs before `init` in the importing package.
 - The blank import `import _ "pkg"` runs the package's `init` (for side effects like driver registration) without making any exported names available.
 
-See also [init order](/docs/internals/init-order) for the full package initialization sequence.
+See also [init order](/internals/init-order) for the full package initialization sequence.
 
 :::warning
 Avoid complex logic in `init`. If initialization can fail, consider explicit `Setup()` functions that return errors — `init` can only call `log.Fatal` to abort, which makes testing harder and error reporting opaque.

@@ -185,7 +185,7 @@ func handler() {
 }
 ```
 
-Pooled objects are cleared between GC cycles. See [sync.Pool](/docs/concurrency/sync-pool) for details.
+Pooled objects are cleared between GC cycles. See [sync.Pool](/concurrency/sync-pool) for details.
 
   </TabItem>
   <TabItem value="prealloc" label="Pre-allocate slices">
@@ -240,7 +240,7 @@ import _ "net/http/pprof"
 // go tool pprof -alloc_objects http://localhost:6060/debug/pprof/heap
 ```
 
-`-alloc_objects` shows total allocations (not just live ones), which reveals hot allocation sites. See [pprof Basics](/docs/tooling/pprof-basics) for the full workflow.
+`-alloc_objects` shows total allocations (not just live ones), which reveals hot allocation sites. See [pprof Basics](/tooling/pprof-basics) for the full workflow.
 
 :::tip
 Run benchmarks with `-benchmem` to measure allocations per operation:

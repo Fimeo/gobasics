@@ -33,8 +33,8 @@ func main() {
 
 | Article | What you'll learn |
 |---|---|
-| [Variadic Functions](/docs/functions/variadic-functions) | How `...T` works, slice aliasing, forwarding patterns |
-| [Closures](/docs/functions/closures) | Variable capture by reference, loop capture bug, memoization |
+| [Variadic Functions](/functions/variadic-functions) | How `...T` works, slice aliasing, forwarding patterns |
+| [Closures](/functions/closures) | Variable capture by reference, loop capture bug, memoization |
 
 ---
 
@@ -43,27 +43,27 @@ func main() {
 
 | Article | What you'll learn |
 |---|---|
-| [Concurrency vs. Parallelism](/docs/concurrency/concurrency-vs-parallelism) | The precise distinction, I/O-bound vs CPU-bound, GOMAXPROCS |
-| [Goroutine Scheduling](/docs/concurrency/goroutine-scheduling) | G/M/P model, work stealing, syscall handoff |
-| [Goroutine Preemption](/docs/concurrency/goroutine-preemption) | Why tight CPU loops can starve other goroutines |
-| [Go Memory Model](/docs/concurrency/go-memory-model) | Happens-before, sequentially consistent atomics |
-| [Happens-Before](/docs/concurrency/happens-before) | Mutex, channels, atomics, WaitGroup guarantees |
-| [Data Races](/docs/concurrency/data-races) | Why "it works on my machine" is a lie |
-| [Race Detector](/docs/concurrency/race-detector) | What it catches and what it can't prove |
-| [Channel Internals](/docs/concurrency/channel-internals) | Buffered vs unbuffered, blocking semantics, hchan layout |
-| [select Behavior](/docs/concurrency/select-behavior) | Fairness, pseudo-random case picking |
-| [Closing Channels](/docs/concurrency/closing-channels) | Who closes, what receivers observe |
-| [Nil Channels](/docs/concurrency/nil-channels) | The disabled-case pattern |
-| [Context Cancellation](/docs/concurrency/context-cancellation) | Deadlines, propagation, cleanup patterns |
-| [Concurrency Patterns](/docs/concurrency/concurrency-patterns) | Pipeline, fan-out, fan-in, done channel |
-| [sync.WaitGroup](/docs/concurrency/waitgroups) | Add/Done/Wait rules, copy gotcha, error collection |
-| [sync.Once](/docs/concurrency/sync-once) | Internals, common deadlock patterns |
-| [sync.Pool](/docs/concurrency/sync-pool) | What it is, what it isn't, GC interaction |
-| [atomic vs Mutex vs Channels](/docs/concurrency/atomic-vs-mutex-vs-channels) | Decision guide for synchronization |
-| [GOMAXPROCS](/docs/concurrency/gomaxprocs) | What it really controls |
-| [Map Concurrency](/docs/concurrency/map-concurrency) | Why concurrent writes crash Go |
-| [Goroutine Leaks](/docs/concurrency/goroutine-leaks) | Causes, detection with pprof and goleak, prevention |
-| [errgroup](/docs/concurrency/errgroup) | Concurrent tasks with error propagation and cancellation |
+| [Concurrency vs. Parallelism](/concurrency/concurrency-vs-parallelism) | The precise distinction, I/O-bound vs CPU-bound, GOMAXPROCS |
+| [Goroutine Scheduling](/concurrency/goroutine-scheduling) | G/M/P model, work stealing, syscall handoff |
+| [Goroutine Preemption](/concurrency/goroutine-preemption) | Why tight CPU loops can starve other goroutines |
+| [Go Memory Model](/concurrency/go-memory-model) | Happens-before, sequentially consistent atomics |
+| [Happens-Before](/concurrency/happens-before) | Mutex, channels, atomics, WaitGroup guarantees |
+| [Data Races](/concurrency/data-races) | Why "it works on my machine" is a lie |
+| [Race Detector](/concurrency/race-detector) | What it catches and what it can't prove |
+| [Channel Internals](/concurrency/channel-internals) | Buffered vs unbuffered, blocking semantics, hchan layout |
+| [select Behavior](/concurrency/select-behavior) | Fairness, pseudo-random case picking |
+| [Closing Channels](/concurrency/closing-channels) | Who closes, what receivers observe |
+| [Nil Channels](/concurrency/nil-channels) | The disabled-case pattern |
+| [Context Cancellation](/concurrency/context-cancellation) | Deadlines, propagation, cleanup patterns |
+| [Concurrency Patterns](/concurrency/concurrency-patterns) | Pipeline, fan-out, fan-in, done channel |
+| [sync.WaitGroup](/concurrency/waitgroups) | Add/Done/Wait rules, copy gotcha, error collection |
+| [sync.Once](/concurrency/sync-once) | Internals, common deadlock patterns |
+| [sync.Pool](/concurrency/sync-pool) | What it is, what it isn't, GC interaction |
+| [atomic vs Mutex vs Channels](/concurrency/atomic-vs-mutex-vs-channels) | Decision guide for synchronization |
+| [GOMAXPROCS](/concurrency/gomaxprocs) | What it really controls |
+| [Map Concurrency](/concurrency/map-concurrency) | Why concurrent writes crash Go |
+| [Goroutine Leaks](/concurrency/goroutine-leaks) | Causes, detection with pprof and goleak, prevention |
+| [errgroup](/concurrency/errgroup) | Concurrent tasks with error propagation and cancellation |
 
 ---
 
@@ -72,18 +72,18 @@ func main() {
 
 | Article | What you'll learn |
 |---|---|
-| [Packages and Modules](/docs/internals/packages) | Package vs module, visibility rules, init, blank imports |
-| [Pointers](/docs/internals/pointers) | Value vs pointer semantics, nil, escape analysis, no arithmetic |
-| [Memory Management](/docs/internals/memory-management) | Stack vs heap, TCMalloc allocator, escape triggers |
-| [Escape Analysis](/docs/internals/escape-analysis) | Stack vs heap allocation, reading `-gcflags="-m"` output |
-| [Slice Internals](/docs/internals/slices-internals) | len/cap, append growth, shared backing arrays |
-| [Map Internals](/docs/internals/map-internals) | Hashing, buckets, growth, iteration randomness |
-| [String Immutability](/docs/internals/string-immutability) | `string`/`[]byte` conversions and allocations |
-| [defer Internals](/docs/internals/defer-internals) | Stack, argument evaluation, hot loop cost |
-| [GC Basics](/docs/internals/gc-basics) | Tri-color marking, STW phases |
-| [Write Barrier](/docs/internals/write-barrier) | Why it exists, performance impact |
-| [Memory Alignment](/docs/internals/memory-alignment) | False sharing in structs |
-| [init() Order](/docs/internals/init-order) | Package init sequence and traps |
+| [Packages and Modules](/internals/packages) | Package vs module, visibility rules, init, blank imports |
+| [Pointers](/internals/pointers) | Value vs pointer semantics, nil, escape analysis, no arithmetic |
+| [Memory Management](/internals/memory-management) | Stack vs heap, TCMalloc allocator, escape triggers |
+| [Escape Analysis](/internals/escape-analysis) | Stack vs heap allocation, reading `-gcflags="-m"` output |
+| [Slice Internals](/internals/slices-internals) | len/cap, append growth, shared backing arrays |
+| [Map Internals](/internals/map-internals) | Hashing, buckets, growth, iteration randomness |
+| [String Immutability](/internals/string-immutability) | `string`/`[]byte` conversions and allocations |
+| [defer Internals](/internals/defer-internals) | Stack, argument evaluation, hot loop cost |
+| [GC Basics](/internals/gc-basics) | Tri-color marking, STW phases |
+| [Write Barrier](/internals/write-barrier) | Why it exists, performance impact |
+| [Memory Alignment](/internals/memory-alignment) | False sharing in structs |
+| [init() Order](/internals/init-order) | Package init sequence and traps |
 
 ---
 
@@ -92,11 +92,11 @@ func main() {
 
 | Article | What you'll learn |
 |---|---|
-| [Interfaces Under the Hood](/docs/type-system/interfaces-under-the-hood) | itab, dynamic type, dynamic value |
-| [Empty Interface](/docs/type-system/empty-interface) | `any`, type assertions, cost |
-| [Value vs Pointer Receivers](/docs/type-system/value-vs-pointer-receivers) | Method sets, interface satisfaction |
-| [Embedding](/docs/type-system/embedding) | Promotion, ambiguity, zero values |
-| [Generics](/docs/type-system/generics) | Type parameters, constraints, instantiation |
+| [Interfaces Under the Hood](/type-system/interfaces-under-the-hood) | itab, dynamic type, dynamic value |
+| [Empty Interface](/type-system/empty-interface) | `any`, type assertions, cost |
+| [Value vs Pointer Receivers](/type-system/value-vs-pointer-receivers) | Method sets, interface satisfaction |
+| [Embedding](/type-system/embedding) | Promotion, ambiguity, zero values |
+| [Generics](/type-system/generics) | Type parameters, constraints, instantiation |
 
 ---
 
@@ -105,9 +105,9 @@ func main() {
 
 | Article | What you'll learn |
 |---|---|
-| [Error Handling Patterns](/docs/error-handling/error-handling) | Wrapping, `errors.Is`/`As`, sentinel errors |
-| [panic and recover](/docs/error-handling/panic-recover) | Rules, goroutine boundaries, server recovery pattern |
-| [Graceful Shutdown](/docs/error-handling/graceful-shutdown) | OS signals, context cancellation, draining workers |
+| [Error Handling Patterns](/error-handling) | Wrapping, `errors.Is`/`As`, sentinel errors |
+| [panic and recover](/error-handling/panic-recover) | Rules, goroutine boundaries, server recovery pattern |
+| [Graceful Shutdown](/error-handling/graceful-shutdown) | OS signals, context cancellation, draining workers |
 
 ---
 
@@ -116,7 +116,7 @@ func main() {
 
 | Article | What you'll learn |
 |---|---|
-| [Table-Driven Tests](/docs/testing/table-driven-tests) | `t.Run`, subtests, benchmarks, `t.Helper`, coverage |
+| [Table-Driven Tests](/testing/table-driven-tests) | `t.Run`, subtests, benchmarks, `t.Helper`, coverage |
 
 ---
 
@@ -125,11 +125,11 @@ func main() {
 
 | Article | What you'll learn |
 |---|---|
-| [io.Reader and io.Writer](/docs/standard-library/io-reader-writer) | Composition model, `io.Copy`, `bufio`, HTTP bodies |
-| [time.Timer and time.Ticker](/docs/standard-library/time-timer-ticker) | Stop/Reset pitfalls, `time.After` leaks, ticker drops |
-| [net/http Transport](/docs/standard-library/http-transport) | Keep-alive, connection pooling, timeouts |
-| [http.Client Reuse](/docs/standard-library/http-client-reuse) | Why per-request clients are a bug |
-| [JSON Encoding Pitfalls](/docs/standard-library/json-encoding-pitfalls) | Numbers, `interface{}`, allocations |
+| [io.Reader and io.Writer](/standard-library/io-reader-writer) | Composition model, `io.Copy`, `bufio`, HTTP bodies |
+| [time.Timer and time.Ticker](/standard-library/time-timer-ticker) | Stop/Reset pitfalls, `time.After` leaks, ticker drops |
+| [net/http Transport](/standard-library/http-transport) | Keep-alive, connection pooling, timeouts |
+| [http.Client Reuse](/standard-library/http-client-reuse) | Why per-request clients are a bug |
+| [JSON Encoding Pitfalls](/standard-library/json-encoding-pitfalls) | Numbers, `interface{}`, allocations |
 
 ---
 
@@ -138,9 +138,9 @@ func main() {
 
 | Article | What you'll learn |
 |---|---|
-| [pprof Basics](/docs/tooling/pprof-basics) | CPU, heap, goroutine, mutex profiling |
-| [Build Tags](/docs/tooling/build-tags) | Why builds can silently change |
-| [cgo Overhead](/docs/tooling/cgo-overhead) | Why crossing the C boundary is expensive |
+| [pprof Basics](/tooling/pprof-basics) | CPU, heap, goroutine, mutex profiling |
+| [Build Tags](/tooling/build-tags) | Why builds can silently change |
+| [cgo Overhead](/tooling/cgo-overhead) | Why crossing the C boundary is expensive |
 
 ---
 
@@ -151,34 +151,34 @@ Articles are self-contained — you can read in any order. That said, some natur
 <Tabs>
   <TabItem value="concurrency" label="Concurrency deep dive" default>
 
-1. [Goroutine Scheduling](/docs/concurrency/goroutine-scheduling) — understand the G/M/P model first
-2. [Concurrency vs. Parallelism](/docs/concurrency/concurrency-vs-parallelism) — clear up the fundamental distinction
-3. [Channel Internals](/docs/concurrency/channel-internals) — how channels are implemented
-4. [Go Memory Model](/docs/concurrency/go-memory-model) + [Happens-Before](/docs/concurrency/happens-before) — the formal rules
-5. [Data Races](/docs/concurrency/data-races) + [Race Detector](/docs/concurrency/race-detector) — how to find bugs
-6. [Concurrency Patterns](/docs/concurrency/concurrency-patterns) — pipeline, fan-out, fan-in
-7. [Goroutine Leaks](/docs/concurrency/goroutine-leaks) — production survival
+1. [Goroutine Scheduling](/concurrency/goroutine-scheduling) — understand the G/M/P model first
+2. [Concurrency vs. Parallelism](/concurrency/concurrency-vs-parallelism) — clear up the fundamental distinction
+3. [Channel Internals](/concurrency/channel-internals) — how channels are implemented
+4. [Go Memory Model](/concurrency/go-memory-model) + [Happens-Before](/concurrency/happens-before) — the formal rules
+5. [Data Races](/concurrency/data-races) + [Race Detector](/concurrency/race-detector) — how to find bugs
+6. [Concurrency Patterns](/concurrency/concurrency-patterns) — pipeline, fan-out, fan-in
+7. [Goroutine Leaks](/concurrency/goroutine-leaks) — production survival
 
   </TabItem>
   <TabItem value="performance" label="Performance & internals">
 
-1. [Escape Analysis](/docs/internals/escape-analysis) — stack vs heap
-2. [Memory Management](/docs/internals/memory-management) — the allocator
-3. [GC Basics](/docs/internals/gc-basics) + [Write Barrier](/docs/internals/write-barrier) — GC mechanics
-4. [Memory Alignment](/docs/internals/memory-alignment) — struct layout and false sharing
-5. [sync.Pool](/docs/concurrency/sync-pool) — reducing allocator pressure
-6. [pprof Basics](/docs/tooling/pprof-basics) — profiling in practice
+1. [Escape Analysis](/internals/escape-analysis) — stack vs heap
+2. [Memory Management](/internals/memory-management) — the allocator
+3. [GC Basics](/internals/gc-basics) + [Write Barrier](/internals/write-barrier) — GC mechanics
+4. [Memory Alignment](/internals/memory-alignment) — struct layout and false sharing
+5. [sync.Pool](/concurrency/sync-pool) — reducing allocator pressure
+6. [pprof Basics](/tooling/pprof-basics) — profiling in practice
 
   </TabItem>
   <TabItem value="production" label="Production readiness">
 
-1. [Error Handling Patterns](/docs/error-handling/error-handling) — idiomatic errors
-2. [Context Cancellation](/docs/concurrency/context-cancellation) — deadlines and propagation
-3. [Graceful Shutdown](/docs/error-handling/graceful-shutdown) — clean process lifecycle
-4. [Goroutine Leaks](/docs/concurrency/goroutine-leaks) — how to detect and prevent them
-5. [http.Client Reuse](/docs/standard-library/http-client-reuse) — connection pool hygiene
-6. [errgroup](/docs/concurrency/errgroup) — concurrent work with error propagation
-7. [Table-Driven Tests](/docs/testing/table-driven-tests) — testing idioms
+1. [Error Handling Patterns](/error-handling) — idiomatic errors
+2. [Context Cancellation](/concurrency/context-cancellation) — deadlines and propagation
+3. [Graceful Shutdown](/error-handling/graceful-shutdown) — clean process lifecycle
+4. [Goroutine Leaks](/concurrency/goroutine-leaks) — how to detect and prevent them
+5. [http.Client Reuse](/standard-library/http-client-reuse) — connection pool hygiene
+6. [errgroup](/concurrency/errgroup) — concurrent work with error propagation
+7. [Table-Driven Tests](/testing/table-driven-tests) — testing idioms
 
   </TabItem>
 </Tabs>

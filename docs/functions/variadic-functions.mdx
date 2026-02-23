@@ -207,21 +207,21 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
 <Tabs>
-  <TabItem value="good" label="Good fits" default>
+<TabItem value="good" label="Good fits" default>
 
 - **Convenience constructors**: `NewServer(opts ...Option)` — functional options pattern
 - **Aggregation functions**: `sum`, `max`, `min` — operating on any number of same-type values
 - **Logging / formatting**: wrapping `fmt.Sprintf` or building log entry helpers
 - **Joining / collecting**: building slices from scattered elements without forcing callers to construct a slice first
 
-  </TabItem>
-  <TabItem value="bad" label="Poor fits">
+</TabItem>
+<TabItem value="bad" label="Poor fits">
 
 - **When you need at least one argument**: variadic allows zero args; use a required first param + variadic rest: `func f(first T, rest ...T)`
 - **Mixed types with complex dispatch**: better to define an interface or use explicit overloads
 - **Performance-critical hot paths**: every call with individual args allocates a new slice — prefer passing an explicit `[]T` in tight loops
 
-  </TabItem>
+</TabItem>
 </Tabs>
 
 ## Key Takeaways

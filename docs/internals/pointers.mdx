@@ -182,22 +182,22 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
 <Tabs>
-  <TabItem value="use" label="Use a pointer when..." default>
+<TabItem value="use" label="Use a pointer when..." default>
 
 - **The function needs to mutate the value**: methods that modify struct fields must have pointer receivers.
 - **The value is large**: copying a large struct on every call wastes CPU and memory. A pointer is always one machine word.
 - **Representing absence**: a `*T` can be `nil` to indicate "no value"; a `T` always has a zero value but can't express absence.
 - **Sharing a value across goroutines**: when multiple goroutines need to observe mutations to the same object (protected by a mutex).
 
-  </TabItem>
-  <TabItem value="value" label="Use a value when...">
+</TabItem>
+<TabItem value="value" label="Use a value when...">
 
 - **The type is small and immutable**: `int`, `bool`, `float64`, small structs — copying is cheap and avoids heap allocation.
 - **You want defensive copies**: functions receive their own copy, preventing accidental mutation.
 - **Concurrency without sharing**: value semantics make data-race analysis simpler — no shared pointer means no concurrent write.
 - **Maps, slices, channels, functions**: these are already reference types internally — passing them by value passes the reference, not a deep copy.
 
-  </TabItem>
+</TabItem>
 </Tabs>
 
 ## Escape Analysis: Stack vs. Heap
@@ -223,7 +223,7 @@ When you return a pointer to a local variable, the compiler detects that the var
 go build -gcflags="-m" ./...
 ```
 
-See [Escape Analysis](/docs/internals/escape-analysis) for a deep dive.
+See [Escape Analysis](/internals/escape-analysis) for a deep dive.
 
 :::note
 In Go, unlike C, returning a pointer to a local variable is always safe. The compiler ensures the value lives long enough. You never have dangling pointers in Go (assuming no `unsafe` usage).

@@ -290,28 +290,28 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
 <Tabs>
-  <TabItem value="channels" label="Channels" default>
+<TabItem value="channels" label="Channels" default>
 
 - The goroutine that creates a channel is usually responsible for closing it.
 - A goroutine blocked on receive exits when the channel is closed — always close producer channels when done.
 - Use buffered channels (size 1) for fire-and-forget sends where you don't want to wait for a receiver.
 - Use `select` with a done/context case on any blocking send or receive.
 
-  </TabItem>
-  <TabItem value="context" label="Context">
+</TabItem>
+<TabItem value="context" label="Context">
 
 - Every goroutine that does I/O or waits should accept a `context.Context` and respect `ctx.Done()`.
 - Never use `context.Background()` inside a goroutine launched from a request handler — pass the request context.
 - Parent contexts cancel child contexts — structure context trees so cancellation propagates naturally.
 
-  </TabItem>
-  <TabItem value="timers" label="Timers">
+</TabItem>
+<TabItem value="timers" label="Timers">
 
 - Never use `time.After` inside a loop — use `time.NewTicker` and `defer ticker.Stop()`.
 - Always call `timer.Stop()` when done with a `time.NewTimer` and drain the channel if Stop returns false.
 - For one-shot delays inside a select, `time.After` is fine — the timer fires once and is then GC'd.
 
-  </TabItem>
+</TabItem>
 </Tabs>
 
 ## Key Takeaways
