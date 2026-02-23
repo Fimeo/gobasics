@@ -1,0 +1,9 @@
+node_modules
+build
+.docusaurus
+.git
+.idea
+.DS_Store
+*.md
+!docs/**/*.md
+!docs/**/*.mdx

@@ -1,0 +1,302 @@
+---
+sidebar_position: 17
+title: "Pointer vs Value Receivers: Method Sets and Interface Satisfaction"
+description: "The precise rules around Go method sets, when pointer vs value receivers matter, and the interface satisfaction gotchas that bite even experienced Go developers."
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Pointer vs Value Receivers: Method Sets and Interface Satisfaction
+
+Go methods come in two flavors: value receivers and pointer receivers. The distinction looks syntactic, but it has deep consequences for how methods behave, how copies are made, and most critically, which interfaces a type satisfies. Getting this wrong produces confusing compile errors or, worse, silent bugs where you modify a copy instead of the original.
+
+## Value Receivers: Operating on a Copy
+
+A method with a value receiver `(t T)` receives a **copy** of the value. Any modifications to `t` inside the method are invisible to the caller.
+
+```go
+package main
+
+import "fmt"
+
+type Counter struct{ n int }
+
+func (c Counter) Value() int { return c.n }
+
+// highlight-next-line
+func (c Counter) Increment() { c.n++ } // modifies a copy — caller never sees this
+
+func main() {
+	var c Counter
+	c.Increment()
+	// highlight-next-line
+	fmt.Println(c.Value()) // prints 0, not 1 — the increment was on a copy
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## Pointer Receivers: Operating on the Original
+
+A method with a pointer receiver `(t *T)` receives a pointer to the original value. Modifications are visible to the caller.
+
+```go
+package main
+
+import "fmt"
+
+type Counter struct{ n int }
+
+func (c *Counter) Value() int { return c.n }
+
+// highlight-next-line
+func (c *Counter) Increment() { c.n++ } // modifies the original
+
+func main() {
+	var c Counter
+	c.Increment()
+	// highlight-next-line
+	fmt.Println(c.Value()) // prints 1 — the original was modified
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## Method Sets: The Core Rule
+
+This is where most confusion originates. Go defines **method sets** precisely:
+
+- The method set of a type `T` contains only methods declared with **value receivers** on `T`.
+- The method set of `*T` contains methods declared with **both value receivers and pointer receivers** on `T`.
+
+Put plainly: a `*T` can call everything a `T` can, but a `T` cannot call pointer-receiver methods — at least not through an interface.
+
+### Auto-Dereference on Addressable Values
+
+When you call a pointer-receiver method on a variable that is **addressable** (a local variable, a struct field, a slice element), Go automatically takes its address for you. So `c.Increment()` where `c` is a `Counter` local variable silently becomes `(&c).Increment()`. This convenience can make it seem like `T` has pointer-receiver methods in its method set, but it does not — the compiler is doing you a favor only because it can take the address.
+
+The important corollary: **non-addressable values** do not get this treatment. A value returned directly from a function, a value stored in a map, or a value stored in an interface is not addressable.
+
+```go
+package main
+
+import "fmt"
+
+type Counter struct{ n int }
+
+func (c *Counter) Increment() { c.n++ }
+func (c Counter) Value() int  { return c.n }
+
+func getCounter() Counter { return Counter{n: 10} }
+
+func main() {
+	var c Counter
+	// highlight-next-line
+	c.Increment() // OK — c is addressable, Go rewrites to (&c).Increment()
+	fmt.Println(c.Value())
+
+	// highlight-next-line
+	// getCounter().Increment() // COMPILE ERROR: cannot take address of getCounter()
+	// The return value of a function is not addressable.
+	fmt.Println(getCounter().Value()) // OK — Value has a value receiver
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## Interface Satisfaction: Where It Gets Critical
+
+An interface is satisfied when a type's **method set** includes all the interface's methods. The auto-deref convenience does **not** apply to interface satisfaction — the compiler checks method sets strictly.
+
+If `String() string` is declared with a pointer receiver on `MyType`, then:
+- `*MyType` satisfies `fmt.Stringer` — its method set includes pointer-receiver methods.
+- `MyType` does **not** satisfy `fmt.Stringer` — its method set contains only value-receiver methods.
+
+```go
+package main
+
+import "fmt"
+
+type MyError struct{ code int }
+
+// highlight-next-line
+func (e *MyError) Error() string { // pointer receiver
+	return fmt.Sprintf("error code %d", e.code)
+}
+
+func main() {
+	var err error
+
+	// highlight-next-line
+	err = &MyError{code: 42} // OK — *MyError satisfies error
+	fmt.Println(err)
+
+	// The line below would not compile:
+	// err = MyError{code: 42}
+	// cannot use MyError{...} (type MyError) as type error:
+	//   MyError does not implement error (Error method has pointer receiver)
+	_ = err
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+:::danger
+The exact compile error you will see is:
+
+```
+cannot use MyType{} (type MyType) as type SomeInterface:
+    MyType does not implement SomeInterface (Method method has pointer receiver)
+```
+
+The fix is always the same: use `&MyType{}` when assigning to the interface variable, or change the method to use a value receiver if modification is not needed.
+:::
+
+## Value vs Pointer: Side-by-Side
+
+<Tabs>
+<TabItem value="value" label="Value Receiver">
+
+```go
+package main
+
+import "fmt"
+
+type Rectangle struct {
+	Width, Height float64
+}
+
+// Value receiver — works on a copy, safe to call on both T and *T
+func (r Rectangle) Area() float64 {
+	return r.Width * r.Height
+}
+
+func (r Rectangle) Perimeter() float64 {
+	return 2 * (r.Width + r.Height)
+}
+
+// Scale does NOT work — r is a copy, caller sees no change
+func (r Rectangle) Scale(factor float64) {
+	r.Width *= factor
+	r.Height *= factor
+}
+
+func main() {
+	r := Rectangle{Width: 3, Height: 4}
+	r.Scale(2) // silently does nothing to r
+	fmt.Printf("Area: %.1f, Perimeter: %.1f\n", r.Area(), r.Perimeter())
+	// prints: Area: 12.0, Perimeter: 14.0 — unchanged
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+Value receivers are appropriate for small, immutable types where you want to communicate "this method does not modify the receiver." They also allow calling the method on both `T` and `*T` values, and on non-addressable values.
+
+</TabItem>
+<TabItem value="pointer" label="Pointer Receiver">
+
+```go
+package main
+
+import "fmt"
+
+type Rectangle struct {
+	Width, Height float64
+}
+
+// Pointer receiver — operates on the original
+func (r *Rectangle) Area() float64 {
+	return r.Width * r.Height
+}
+
+func (r *Rectangle) Perimeter() float64 {
+	return 2 * (r.Width + r.Height)
+}
+
+// highlight-next-line
+func (r *Rectangle) Scale(factor float64) { // modifies the original
+	r.Width *= factor
+	r.Height *= factor
+}
+
+func main() {
+	r := Rectangle{Width: 3, Height: 4}
+	r.Scale(2) // Go auto-derefs: (&r).Scale(2) — r is modified
+	fmt.Printf("Area: %.1f, Perimeter: %.1f\n", r.Area(), r.Perimeter())
+	// prints: Area: 48.0, Perimeter: 28.0 — scaled correctly
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+Pointer receivers are necessary when the method must modify the receiver, and preferred when the struct is large enough that copying it on every method call would be wasteful. If any method on a type needs a pointer receiver, Go convention says to make **all** methods on that type use pointer receivers for consistency.
+
+</TabItem>
+</Tabs>
+
+## Interface Satisfaction with Pointer Receivers
+
+```go
+package main
+
+import "fmt"
+
+type Describer interface {
+	Describe() string
+}
+
+type Person struct {
+	Name string
+	Age  int
+}
+
+// highlight-next-line
+func (p *Person) Describe() string { // pointer receiver
+	return fmt.Sprintf("%s, age %d", p.Name, p.Age)
+}
+
+func printDescription(d Describer) {
+	fmt.Println(d.Describe())
+}
+
+func main() {
+	p := Person{Name: "Alice", Age: 30}
+
+	// highlight-next-line
+	printDescription(&p) // OK — *Person satisfies Describer
+
+	// printDescription(p) would fail to compile:
+	// Person does not implement Describer (Describe method has pointer receiver)
+
+	// But you can still call Describe directly on p (auto-deref):
+	// highlight-next-line
+	fmt.Println(p.Describe()) // OK — p is addressable, Go uses (&p).Describe()
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## When to Use Each
+
+**Use pointer receivers when:**
+1. The method needs to modify the receiver's fields.
+2. The receiver is a large struct (copying is expensive — a rough threshold is a struct larger than 64-128 bytes).
+3. Consistency: if any method on the type requires a pointer receiver, make all methods pointer receivers to avoid surprising method set behavior.
+4. The type contains a field that must not be copied (a `sync.Mutex`, for instance).
+
+**Use value receivers when:**
+1. The type is small and naturally immutable — int-like types, coordinates, colors.
+2. You want to explicitly communicate that the method does not modify the receiver.
+3. The type is a simple alias or wrapper around a built-in type.
+
+:::warning
+Mixing value and pointer receivers on the same type is legal but problematic. The type's method set becomes inconsistent, and whether it satisfies a given interface depends on whether you have a `T` or a `*T` — which is rarely what you want. Pick one style and apply it uniformly across the type.
+:::
+
+:::note
+The Go standard library mostly uses pointer receivers for types that have any mutable state. `bytes.Buffer`, `sync.Mutex`, `net.Conn` implementations, and most structs in the `net/http` package all use pointer receivers throughout. Value receivers appear on types like `time.Time`, `net.IP`, and small math types where copying is cheap and the value semantics are desirable.
+:::
+
+## Key Takeaways
+
+- A **value receiver** `(t T)` gets a copy of the value. The method set of `T` contains only value-receiver methods.
+- A **pointer receiver** `(t *T)` gets a pointer to the original. The method set of `*T` contains both value-receiver and pointer-receiver methods.
+- Go auto-dereferences addressable values: `t.PtrMethod()` becomes `(&t).PtrMethod()` when `t` is a local variable. This convenience does **not** extend to interface satisfaction.
+- If `Method()` has a pointer receiver, only `*T` satisfies interfaces requiring `Method()`. `T` does not — storing a `T` into that interface is a compile error.
+- If any method on a type needs a pointer receiver, make all methods pointer receivers to keep the method set coherent.
+- Use value receivers for small, immutable types. Use pointer receivers for anything with mutable state, large size, or non-copyable fields like `sync.Mutex`.

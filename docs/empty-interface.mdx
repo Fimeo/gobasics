@@ -1,0 +1,314 @@
+---
+sidebar_position: 19
+title: "Empty Interface and Type Assertions: Cost and Pitfalls"
+description: "What any/interface{} really is, the performance cost of type assertions and type switches, and when to avoid empty interfaces."
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Empty Interface and Type Assertions: Cost and Pitfalls
+
+The empty interface — written `interface{}` before Go 1.18 and now also as the built-in alias `any` — is the type that every Go type satisfies. It has zero method requirements. This makes it maximally flexible and maximally dangerous: you lose all type safety the moment you reach for it. Understanding what `any` actually is at runtime, what it costs, and when it is and is not the right tool will sharpen your instinct for when to use it and when to use generics or concrete types instead.
+
+## What `any` Is at Runtime
+
+An empty interface value is a two-word struct called `eface` in the Go runtime:
+
+```
+eface {
+    _type *_type        // pointer to the runtime type descriptor for the concrete type
+    data  unsafe.Pointer // pointer to the concrete value (or the value itself)
+}
+```
+
+This is slightly simpler than `iface` (used for non-empty interfaces) because there is no vtable — zero methods means no function pointers to store. When both words are nil, the interface itself is nil. When `_type` is non-nil, the interface holds a value of the type described by `_type`.
+
+The `data` word points to the concrete value on the heap. For small values that fit in a pointer (like a `bool`, `uint8`, or a pointer type itself), the runtime may store the value directly in the `data` word without a heap allocation. For larger values, the runtime heap-allocates a copy of the value and stores a pointer to that copy in `data`.
+
+## Storing Values: When Does Boxing Allocate?
+
+Assigning a value into an `any` variable may or may not allocate. The Go compiler applies several optimizations:
+
+- **Small integer constants** (typically 0–255) are cached by the runtime — no allocation.
+- **Pointer types** assigned to `any` store the pointer directly in the `data` word — no allocation.
+- **Larger scalar values** (e.g., a 64-bit float, a large struct) require heap allocation to store the concrete value.
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	// Storing an integer in any — may allocate depending on value and compiler
+	var x any = 42
+	fmt.Println(x)
+
+	// Storing a pointer in any — no extra allocation, pointer goes in data word
+	n := 42
+	// highlight-next-line
+	var p any = &n // &n goes directly into data — one pointer, no copy
+	fmt.Println(p)
+
+	// Storing a struct — the struct is copied to the heap
+	type Point struct{ X, Y, Z float64 }
+	// highlight-next-line
+	var pt any = Point{1, 2, 3} // Point (24 bytes) is heap-allocated
+	fmt.Println(pt)
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+In hot paths, these allocations add up. A tight loop that boxes an integer into `any` on every iteration will generate significant GC pressure. Below is an illustration of the difference (actual numbers from `go test -bench` on a typical machine):
+
+```go
+package main
+
+// Benchmark results (approximate, amd64, Go 1.22):
+//
+// BenchmarkDirect      1000000000    0.3 ns/op    0 allocs/op
+// BenchmarkViaAny        50000000   28.0 ns/op    1 allocs/op
+//
+// Storing a non-cached integer in interface{} costs ~28ns and one heap allocation.
+// Calling with a concrete type: ~0.3ns, zero allocations.
+
+import "fmt"
+
+func printDirect(n int) {
+	_ = n
+}
+
+func printViaAny(v any) {
+	_ = v
+}
+
+func main() {
+	printDirect(42)
+	printViaAny(42)
+	fmt.Println("see benchmark comments for numbers")
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## Type Assertions
+
+A type assertion `x.(T)` extracts the concrete value from an `any` (or any interface). At runtime, the operation compares `eface._type` with the type descriptor for `T`. If they match, the value at `eface.data` is returned as a `T`. If they do not match:
+
+- With the two-return form `v, ok := x.(T)`, `ok` is `false` and `v` is the zero value of `T`. No panic.
+- With the single-return form `v := x.(T)`, the program panics with `interface conversion: interface {} is X, not T`.
+
+Always use the two-return form unless you are certain of the type and want to panic on mismatch.
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	var values []any = []any{42, "hello", 3.14, true, []int{1, 2, 3}}
+
+	for _, v := range values {
+		// highlight-next-line
+		if s, ok := v.(string); ok { // safe — no panic if not a string
+			fmt.Printf("string value: %q\n", s)
+			continue
+		}
+		// highlight-next-line
+		if n, ok := v.(int); ok {
+			fmt.Printf("int value: %d\n", n)
+			continue
+		}
+		fmt.Printf("other: %T = %v\n", v, v)
+	}
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## Type Switches
+
+When you need to handle multiple possible types, a type switch is cleaner and more efficient than a chain of type assertions. The runtime uses the type hash stored in `_type` for O(1) matching in the common case.
+
+<Tabs>
+<TabItem value="typeswitch" label="Type Switch">
+
+```go
+package main
+
+import "fmt"
+
+func describe(v any) string {
+	// highlight-next-line
+	switch val := v.(type) { // val has the concrete type in each branch
+	case nil:
+		return "nil"
+	case int:
+		return fmt.Sprintf("int(%d)", val)
+	case float64:
+		return fmt.Sprintf("float64(%g)", val)
+	case string:
+		return fmt.Sprintf("string(%q, len=%d)", val, len(val))
+	case bool:
+		return fmt.Sprintf("bool(%v)", val)
+	case []any:
+		return fmt.Sprintf("[]any with %d elements", len(val))
+	default:
+		return fmt.Sprintf("unknown(%T)", val)
+	}
+}
+
+func main() {
+	inputs := []any{nil, 42, 3.14, "go", true, []any{1, 2}}
+	for _, v := range inputs {
+		fmt.Println(describe(v))
+	}
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+Use a type switch when you have three or more possible concrete types to handle, or when the `default` case matters. The compiler generates efficient comparison code, and the syntax makes the branching intent explicit.
+
+</TabItem>
+<TabItem value="typeassertion" label="Type Assertion">
+
+```go
+package main
+
+import "fmt"
+
+type Sizer interface {
+	Size() int
+}
+
+type MySlice []int
+
+func (s MySlice) Size() int { return len(s) }
+
+func processSizer(v any) {
+	// highlight-next-line
+	s, ok := v.(Sizer) // assert to an interface, not a concrete type
+	if !ok {
+		fmt.Printf("%T does not implement Sizer\n", v)
+		return
+	}
+	fmt.Printf("size: %d\n", s.Size())
+}
+
+func main() {
+	processSizer(MySlice{1, 2, 3}) // implements Sizer
+	processSizer("hello")          // does not implement Sizer
+	processSizer(42)               // does not implement Sizer
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+Use a direct type assertion when you expect one specific type (or interface) and want to branch on whether that expectation holds. The two-return form is always safer than the single-return form unless you are certain and a panic is acceptable.
+
+</TabItem>
+</Tabs>
+
+## `fmt.Println` and Variadic `any`
+
+The standard library's `fmt` package is the canonical example of `any` used appropriately. `fmt.Println` is declared as:
+
+```go
+func Println(a ...any) (n int, err error)
+```
+
+Every argument you pass is boxed into `any`. This is fine because `fmt` is an I/O boundary — the allocation cost is swamped by the cost of formatting and writing to a file descriptor.
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	name := "Gopher"
+	version := 1.22
+	count := 42
+
+	// highlight-next-line
+	fmt.Println(name, "Go", version, "count:", count)
+	// Each argument is boxed into any — allocations happen, but that's acceptable
+	// because we're doing I/O anyway.
+
+	// fmt.Sprintf with %v also takes ...any:
+	msg := fmt.Sprintf("Hello %s, Go %.2f, %d items", name, version, count)
+	fmt.Println(msg)
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## The `json.Unmarshal` Float64 Pitfall
+
+When you unmarshal JSON into an `interface{}`, the `encoding/json` package has no information about what concrete type a JSON number should become. It defaults to `float64` for all numbers. This surprises developers who expect integers.
+
+:::warning
+`json.Unmarshal` into `interface{}` represents JSON numbers as `float64`, not `int`. The number `42` in JSON becomes `float64(42)` in Go. If you then assert it as `int`, the assertion fails silently (returns false) or panics.
+
+Use `json.Number` or unmarshal into a typed struct to avoid this.
+:::
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+func main() {
+	data := []byte(`{"id": 42, "score": 9.8, "name": "Alice"}`)
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		panic(err)
+	}
+
+	// highlight-next-line
+	id := result["id"] // this is float64(42), NOT int(42)
+	fmt.Printf("id type: %T, value: %v\n", id, id)
+
+	// highlight-next-line
+	if n, ok := id.(int); ok { // this is FALSE — it's float64, not int
+		fmt.Println("int:", n)
+	} else {
+		fmt.Println("not an int — it's float64, always cast accordingly")
+	}
+
+	// Correct approach:
+	// highlight-next-line
+	if f, ok := id.(float64); ok {
+		fmt.Printf("correct: id = %d\n", int(f))
+	}
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## When to Avoid `any`
+
+:::tip
+Prefer concrete types in function signatures over `any` whenever the set of acceptable types is known at compile time. If you find yourself writing a function that takes `any` and then immediately performs a type switch to dispatch on the concrete type, consider whether generics would be cleaner.
+:::
+
+**Avoid `any` when:**
+- The set of types is fixed and known — use generics or an interface with the specific methods you need.
+- You are building a container for a specific element type (e.g., a stack of ints) — use `Stack[T any]` with generics instead.
+- The function is called in a tight loop where the boxing allocation matters — use a concrete type parameter.
+- You would need to type-assert the result immediately at every call site — this is a sign the abstraction is wrong.
+
+**`any` is appropriate when:**
+- Implementing serialization or deserialization (`json.Marshal`, `fmt.Fprintf`) where arbitrary types are a genuine requirement.
+- Writing variadic logging or printing functions that must accept any value.
+- Storing arbitrary context in `context.WithValue` — the key is opaque by design.
+- Writing test utilities that must work with any type.
+- Interfacing with external systems (databases, RPC frameworks) that return untyped data.
+
+## Key Takeaways
+
+- `any` and `interface{}` are identical. `any` is a built-in alias added in Go 1.18 for readability.
+- An `any` value is two words at runtime: `_type *_type` and `data unsafe.Pointer`. Storing a value in `any` may heap-allocate the value (especially for non-pointer types larger than a word).
+- Type assertions `x.(T)` compare `_type` and return the value. Always use the two-return form `v, ok := x.(T)` unless you intend to panic on mismatch.
+- Type switches dispatch on type hash for O(1) performance in the common case.
+- `json.Unmarshal` into `interface{}` produces `float64` for all JSON numbers — not `int`. Use typed structs or `json.Number` to avoid this.
+- In hot paths, `any` boxing can cost tens of nanoseconds and one heap allocation per value. Measure before assuming it matters, but know the cost exists.
+- When you find yourself type-switching on `any` to recover a known set of types, consider generics: they provide the same flexibility with zero boxing cost and full compile-time type safety.

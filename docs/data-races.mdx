@@ -1,0 +1,275 @@
+---
+sidebar_position: 4
+title: "Data Races: Why 'It Works on My Machine' Is a Lie"
+description: "What data races really are, why they produce undefined behavior even when tests pass, and how to find and fix them."
+---
+
+# Data Races: Why "It Works on My Machine" Is a Lie
+
+A data race is not a bug that sometimes crashes your program. It is a condition that renders the entire program's behavior undefined. Tests passing, benchmarks looking fine, months in production without incident — none of these mean anything if your program has a data race. This article explains exactly what races are, why they are so hard to catch without tooling, and how to systematically find and fix them.
+
+## Definition
+
+A **data race** occurs when all three of the following are true simultaneously:
+
+1. Two or more goroutines access the same memory location (variable, field, slice element, map entry).
+2. At least one of those accesses is a **write**.
+3. There is **no synchronization** ordering the accesses.
+
+If all accesses are reads, there is no race, regardless of how many goroutines are involved. It is the combination of a write with any other concurrent access — read or write — that creates the race.
+
+## Why "It Works" Is Meaningless
+
+Modern CPUs execute out of order, maintain per-core write buffers, and may not flush a store to shared memory for many nanoseconds. On **x86**, the memory model happens to be relatively strong (total store order), which means races are less likely to manifest as visible corruption. On **ARM** (including Apple Silicon and most mobile chips), the memory model is weaker, and the same racy code will corrupt data far more aggressively.
+
+The compiler compounds the problem. If the Go compiler can prove that a variable is not accessed from any synchronization point in the current goroutine, it may cache the value in a register, hoist a read out of a loop, or eliminate what looks like a redundant write. All of these transformations are legal under the Go memory model for code without races — and all of them produce wrong results when a race exists.
+
+:::warning Works in tests, fails in production
+A test suite that passes without `-race` does not rule out races. Tests run on your developer laptop (likely x86), under a specific load pattern, for a bounded time. Production runs on different hardware (often ARM), under sustained load, for weeks. The race that never showed up in ten thousand test runs can appear on the first day of traffic.
+:::
+
+## The CPU Cache Problem
+
+Each CPU core has its own L1 and L2 caches. When core 0 writes `x = 42`, that value sits in core 0's write buffer. Core 1 reading `x` may pull from its own stale cache line and see the old value — not because of a bug in the CPU, but because the hardware is working exactly as designed in the absence of a memory barrier instruction. Memory barriers are inserted by the Go runtime at synchronization points (channel operations, mutex lock/unlock, atomic operations). Without them, no inter-core visibility is guaranteed.
+
+## Go's Race Detector
+
+Go ships with a dynamic race detector built into the toolchain. Enable it with the `-race` flag:
+
+```
+go test -race ./...
+go run -race main.go
+go build -race -o myapp .
+```
+
+The race detector instruments **every memory access** at compile time. At runtime, it maintains a vector clock per goroutine and per memory location, and reports any pair of conflicting accesses that are not ordered by happens-before. Its output includes the goroutine stack traces for both the conflicting accesses, making bugs straightforward to locate.
+
+**Overhead**: approximately 2–10x CPU slowdown and 5–10x memory increase. This is acceptable for test suites and staging environments. Do not ship a race-enabled binary to production unless the overhead is acceptable for your workload.
+
+:::info Run -race in CI
+Add `go test -race ./...` to your CI pipeline. The cost is a longer build; the benefit is catching races before they reach production. It is one of the highest-value steps you can add to a Go CI pipeline.
+:::
+
+## Pattern 1: Concurrent Counter Without Synchronization
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+)
+
+func main() {
+	var counter int
+	var wg sync.WaitGroup
+
+	for i := 0; i < 500; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// highlight-next-line
+			counter++ // read-modify-write: NOT atomic
+		}()
+	}
+
+	wg.Wait()
+	fmt.Println("got:", counter, "(expected 500)")
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+`counter++` compiles to a load, an add, and a store. Two goroutines can interleave these three steps, and one goroutine's write overwrites the other's. Run this repeatedly and you will see values less than 500.
+
+**Fix: use `sync/atomic` or a mutex.**
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+)
+
+func main() {
+	var counter atomic.Int64
+	var wg sync.WaitGroup
+
+	for i := 0; i < 500; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// highlight-next-line
+			counter.Add(1) // atomic read-modify-write
+		}()
+	}
+
+	wg.Wait()
+	fmt.Println("got:", counter.Load(), "(expected 500)")
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## Pattern 2: Check-Then-Act on a Shared Flag
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+)
+
+var initialized bool
+var config string
+
+// highlight-next-line
+// BROKEN: check-then-act is not atomic
+func ensureInit(wg *sync.WaitGroup) {
+	defer wg.Done()
+	if !initialized {
+		config = "loaded"
+		initialized = true
+	}
+}
+
+func main() {
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go ensureInit(&wg)
+	}
+	wg.Wait()
+	fmt.Println(config)
+}
+```
+
+Two goroutines can both observe `initialized == false`, both set `config`, and both set `initialized = true`. The write to `config` from one goroutine races with the write from another. The race detector flags both the `initialized` reads and the `config` writes.
+
+**Fix: use `sync.Once`.** It is designed exactly for this pattern and carries its own happens-before guarantee.
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+)
+
+var once sync.Once
+var config string
+
+func ensureInit() {
+	// highlight-next-line
+	once.Do(func() {
+		config = "loaded"
+	})
+}
+
+func main() {
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ensureInit()
+		}()
+	}
+	wg.Wait()
+	fmt.Println(config)
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+## Pattern 3: Concurrent Map Writes
+
+:::danger Maps are not safe for concurrent use
+The Go runtime detects concurrent map writes and **panics** immediately with `"concurrent map read and map write"` or `"concurrent map writes"`. This is not a race that silently corrupts data — it is a guaranteed crash. Unlike a regular data race, this one the runtime catches even without `-race`.
+:::
+
+```go
+package main
+
+import "sync"
+
+func main() {
+	m := make(map[string]int)
+	var wg sync.WaitGroup
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			// highlight-next-line
+			m["key"] = n // concurrent write: WILL PANIC
+		}(i)
+	}
+
+	wg.Wait()
+}
+```
+
+**Fix: use a `sync.RWMutex` or `sync.Map`.**
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+)
+
+func main() {
+	var mu sync.RWMutex
+	m := make(map[string]int)
+	var wg sync.WaitGroup
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			// highlight-next-line
+			mu.Lock()
+			m["key"] = n
+			mu.Unlock()
+		}(i)
+	}
+
+	wg.Wait()
+	mu.RLock()
+	fmt.Println("key:", m["key"])
+	mu.RUnlock()
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+Use `sync.Map` when you have many goroutines reading and few writing (mostly-read workloads), and a plain `map` with `sync.RWMutex` when you control the locking yourself and need the full map API.
+
+## Why Races Are Undefined Behavior in Go
+
+The Go memory model specification states explicitly:
+
+> If a program has a data race, the behavior is undefined for any execution of the program that contains the race.
+
+"Undefined" does not mean "probably wrong." It means the language specification makes **no claims whatsoever** about what the program does. The compiler is permitted to generate code that behaves in any way — including producing values that were never written by any goroutine, skipping stores entirely, or looping forever. Future compiler optimizations may make a currently-tolerable race catastrophically worse.
+
+This is the same classification used in C and C++ for undefined behavior, and the consequences are equally severe.
+
+## The Race Detector's Limitations
+
+The race detector is a **runtime** tool. It only reports races that actually occur during a specific execution. A race that requires a particular scheduling interleaving that never happens during your test run will not be reported. This means:
+
+- Passing `-race` tests do not prove the absence of races.
+- Coverage matters: higher code coverage under `-race` catches more races.
+- Stress testing (running tests many times, with `GOMAXPROCS` set to various values) increases the chance of triggering race-causing interleavings.
+
+## Key Takeaways
+
+- A data race requires: same memory location, at least one write, no synchronization. All three must be present.
+- "It works on my machine" means nothing. x86's strong memory model hides races that ARM exposes. A future compiler version or different load pattern may expose them on any hardware.
+- The race detector (`-race`) is authoritative: if it reports a race, the race is real. If it does not, the race may still exist but was not exercised.
+- The three most common race patterns: unprotected counter increment, check-then-act on a flag, concurrent map writes.
+- Map concurrent writes panic immediately — they do not silently corrupt.
+- Always run `go test -race ./...` in CI.
+- Races are undefined behavior in Go. Do not reason about "what it probably does" — fix the race.

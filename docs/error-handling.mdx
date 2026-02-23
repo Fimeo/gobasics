@@ -1,0 +1,335 @@
+---
+sidebar_position: 38
+title: "Error Handling Patterns: Wrapping, errors.Is, errors.As, Sentinel Errors"
+description: "The Go 1.13+ error wrapping model, how errors.Is and errors.As walk the error chain, when to use sentinel errors, and idiomatic error handling patterns."
+---
+
+# Error Handling Patterns: Wrapping, errors.Is, errors.As, Sentinel Errors
+
+Go treats errors as values — an explicit design choice that makes error handling visible, composable, and testable. Go 1.13 introduced a structured wrapping model that lets errors carry context while preserving the ability to inspect the underlying cause. Understanding how `errors.Is`, `errors.As`, and `fmt.Errorf("%w")` work together is the foundation for writing robust Go code.
+
+## The error Interface
+
+Every error in Go is a value that satisfies the built-in `error` interface:
+
+```go
+type error interface {
+    Error() string
+}
+```
+
+Any type with an `Error() string` method is an error. The interface is intentionally minimal — it describes what an error can say about itself, not what it is. This means a function can return an error value that is a simple string, a struct with detailed fields, or anything in between.
+
+## Error Wrapping with fmt.Errorf and %w
+
+Before Go 1.13, adding context to an error meant creating a new error that lost the original:
+
+```go
+return fmt.Errorf("read config: %s", err.Error()) // original err is gone
+```
+
+Go 1.13 introduced the `%w` verb for `fmt.Errorf`. When you use `%w`, the returned error wraps the original. The original error is accessible via the returned error's `Unwrap()` method:
+
+```go
+return fmt.Errorf("read config: %w", err) // wraps err — original is preserved
+```
+
+Each layer of wrapping creates an **error chain**. Functions like `errors.Is` and `errors.As` traverse this chain by calling `Unwrap()` repeatedly.
+
+## Sentinel Errors and errors.Is
+
+A sentinel error is a package-level variable that identifies a specific error condition:
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+)
+
+// Sentinel errors — exported for callers to check
+var (
+    ErrNotFound   = errors.New("not found")
+    ErrPermission = errors.New("permission denied")
+)
+
+func findUser(id int) error {
+    if id <= 0 {
+        return ErrNotFound
+    }
+    if id > 1000 {
+        return fmt.Errorf("findUser %d: %w", id, ErrPermission)
+    }
+    return nil
+}
+
+func main() {
+    err := findUser(-1)
+// highlight-next-line
+    if errors.Is(err, ErrNotFound) {
+        fmt.Println("user not found — show 404")
+        return
+    }
+
+    err = findUser(5000)
+    if errors.Is(err, ErrPermission) {
+        fmt.Println("permission denied — show 403")
+        return
+    }
+
+    err = findUser(42)
+    fmt.Println("success:", err)
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+`errors.Is(err, target)` walks the error chain calling `Unwrap()` at each step, comparing each error to `target` using `==`. Even if `ErrPermission` is buried three wraps deep, `errors.Is` finds it.
+
+Standard library sentinel errors you've likely used: `io.EOF`, `sql.ErrNoRows`, `os.ErrNotExist`, `context.Canceled`, `context.DeadlineExceeded`.
+
+## Custom Error Types and errors.As
+
+When callers need structured information from an error — not just "which error," but "which error and what was the input" — use a custom error type:
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+)
+
+// Custom error type with additional context
+type ValidationError struct {
+    Field   string
+    Message string
+}
+
+func (e *ValidationError) Error() string {
+    return fmt.Sprintf("validation error: field %q: %s", e.Field, e.Message)
+}
+
+func validateAge(age int) error {
+    if age < 0 {
+        return &ValidationError{Field: "age", Message: "must be non-negative"}
+    }
+    if age > 150 {
+        return &ValidationError{Field: "age", Message: "unrealistic value"}
+    }
+    return nil
+}
+
+func processForm(age int) error {
+    if err := validateAge(age); err != nil {
+// highlight-next-line
+        return fmt.Errorf("processForm: %w", err) // wrap with context
+    }
+    return nil
+}
+
+func main() {
+    err := processForm(-5)
+    if err != nil {
+        fmt.Println("error:", err)
+
+        // Extract the ValidationError from the chain
+        var ve *ValidationError
+// highlight-next-line
+        if errors.As(err, &ve) {
+            fmt.Printf("field: %s, message: %s\n", ve.Field, ve.Message)
+        }
+    }
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+`errors.As(err, &target)` walks the chain looking for an error that can be assigned to the type of `target`. When it finds a `*ValidationError` in the chain, it assigns it to `ve` and returns true. You then have access to the structured fields — `ve.Field`, `ve.Message` — not just the error string.
+
+## The Error Chain
+
+The chain from the example above looks like:
+
+```
+"processForm: validation error: field \"age\": must be non-negative"
+    └─ wraps: *ValidationError{Field: "age", Message: "must be non-negative"}
+```
+
+`errors.Is` and `errors.As` traverse the chain by calling `Unwrap()`:
+
+- `errors.Is(err, target)`: walks the chain, comparing each error to `target` with `==`. Stops when it finds a match or hits nil.
+- `errors.As(err, &target)`: walks the chain, checking if each error can be assigned to target's type. Stops when it finds an assignable error.
+
+Custom errors can implement `Is(target error) bool` to customize the equality check — useful when errors have fields and you want to compare by those fields rather than by pointer identity.
+
+## Sentinel Errors vs Custom Error Types
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+<Tabs>
+<TabItem value="sentinel" label="Sentinel error">
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+)
+
+var ErrNotFound = errors.New("not found")
+
+func getRecord(id int) error {
+    if id == 0 {
+        return ErrNotFound
+    }
+    return nil
+}
+
+func main() {
+    err := getRecord(0)
+    // Simple — just check if it's the right error
+    if errors.Is(err, ErrNotFound) {
+        fmt.Println("record not found")
+    }
+}
+```
+
+**When to use sentinel errors:**
+- The caller only needs to know *which* error occurred, not *why* in detail.
+- The error is a well-known terminal condition: `io.EOF`, `ErrNotFound`.
+- You want a stable, named error the caller can import and compare.
+
+</TabItem>
+<TabItem value="custom" label="Custom error type">
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+)
+
+type NotFoundError struct {
+    Resource string
+    ID       int
+}
+
+func (e *NotFoundError) Error() string {
+    return fmt.Sprintf("%s with id %d not found", e.Resource, e.ID)
+}
+
+func getRecord(id int) error {
+    if id == 0 {
+        return &NotFoundError{Resource: "record", ID: id}
+    }
+    return nil
+}
+
+func main() {
+    err := getRecord(0)
+    var nfe *NotFoundError
+    if errors.As(err, &nfe) {
+        // Access structured information
+        fmt.Printf("could not find %s (id=%d)\n", nfe.Resource, nfe.ID)
+    }
+}
+```
+
+**When to use custom error types:**
+- The caller needs structured data from the error (which resource, which field, what value).
+- The error needs HTTP status codes, retry-after durations, or other metadata.
+- You want `errors.As` to extract the type and work with its fields.
+
+</TabItem>
+</Tabs>
+
+## errors.Join (Go 1.20)
+
+When you need to validate multiple things and report all failures, `errors.Join` combines multiple errors into one:
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+)
+
+func validateForm(name string, age int) error {
+    var errs []error
+    if name == "" {
+        errs = append(errs, errors.New("name is required"))
+    }
+    if age < 0 || age > 150 {
+        errs = append(errs, fmt.Errorf("age %d is invalid", age))
+    }
+    return errors.Join(errs...)
+}
+
+func main() {
+    err := validateForm("", -1)
+    if err != nil {
+        fmt.Println(err)
+        // errors.Is and errors.As work on joined errors too
+    }
+
+    err = validateForm("Alice", 30)
+    fmt.Println("valid form:", err)
+}
+```
+
+`errors.Join` returns nil when all errors are nil, making the nil check safe. The joined error's `Unwrap() []error` method returns the list, so `errors.Is` and `errors.As` inspect each joined error.
+
+## Idiomatic Error Handling Patterns
+
+**Don't panic for expected errors.** Return error values. Panics are for programming errors and genuinely unrecoverable situations, not for user input or network failures.
+
+**Add context at each layer — but add it once.** Each function should add context describing what it was doing when the error occurred:
+
+```go
+func readConfig(path string) (*Config, error) {
+    data, err := os.ReadFile(path)
+    if err != nil {
+// highlight-next-line
+        return nil, fmt.Errorf("readConfig: %w", err) // adds "readConfig:" context
+    }
+    // ...
+}
+```
+
+:::tip
+Add context when wrapping but keep the message concise. Each layer adds one meaningful phrase: `"readConfig: open file: permission denied"` tells a story through the wrapping chain. Avoid redundant context like `"readConfig: failed to read config: %w"` — the wrapping chain already shows where the error came from.
+:::
+
+**Handle errors once.** Either log the error or return it — not both. If you log and return, the error gets logged again by the caller, producing duplicate log entries with no additional information.
+
+**Check errors immediately.** Go's idiomatic style checks errors right after the call that might produce them:
+
+```go
+result, err := someOperation()
+if err != nil {
+    return fmt.Errorf("someOperation: %w", err)
+}
+// use result
+```
+
+Do not defer error checking or store errors in a variable to check later. Immediate checking keeps the error handling adjacent to the code that might fail.
+
+:::warning
+`errors.Is` uses `==` comparison by default. Two errors created with `errors.New("same message")` are not equal — each call returns a distinct value. For sentinel errors, the identity is the variable, not the message. If your custom error type has fields and you want `errors.Is` to match based on those fields (not pointer identity), implement a custom `Is(target error) bool` method on your error type.
+:::
+
+## Key Takeaways
+
+- `error` is an interface: `Error() string`. Any type satisfying it is an error.
+- `fmt.Errorf("context: %w", err)` wraps `err`, creating an error chain. `%w` preserves the original.
+- `errors.Is(err, target)` walks the chain comparing each error to `target`. Use for sentinel errors.
+- `errors.As(err, &target)` walks the chain looking for an assignable type. Use for custom error types with fields.
+- Sentinel errors are package-level variables (`var ErrNotFound = errors.New(...)`). Their identity is their value, not their message.
+- Custom error types add structured information that callers can extract with `errors.As`.
+- `errors.Join` (Go 1.20) combines multiple errors into one, with `errors.Is`/`errors.As` support.
+- Add context at each layer with `fmt.Errorf("what I was doing: %w", err)`, but add it once per layer.
+- Handle errors once — either log or return, not both.

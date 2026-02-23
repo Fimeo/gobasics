@@ -1,0 +1,194 @@
+---
+sidebar_position: 36
+title: "Build Tags and module replace: Why Builds Can Silently Change"
+description: "How Go build constraints filter files, how module replace directives redirect dependencies, and the surprises that follow when neither is obvious."
+---
+
+# Build Tags and module replace: Why Builds Can Silently Change
+
+Two Go features can silently alter what code gets compiled: build tags and `go.mod` replace directives. Neither produces a warning when they take effect. A misspelled build tag causes a file to vanish from the build. A replace directive in `go.mod` redirects an entire module to different code. Both are powerful and legitimate tools — and both are sources of genuine production surprises.
+
+## Build Tags (Build Constraints)
+
+A build tag is a condition that must be satisfied for a file to be included in a build. If the condition is false, the file is silently excluded — no error, no warning, as if the file didn't exist.
+
+### Syntax
+
+The modern syntax (Go 1.17+) uses a comment at the very top of the file, before the package declaration, with a blank line separating it from `package`:
+
+```go
+//go:build linux && amd64
+
+package main
+```
+
+This file is only compiled when building for Linux on AMD64. On any other platform, the compiler ignores the file entirely.
+
+The old syntax (pre-1.17, still recognized but deprecated) used:
+
+```
+// +build linux,amd64
+```
+
+The comma is AND, a space is OR, and `!` negates. The new syntax uses `&&`, `||`, and `!` — standard boolean operators, much clearer.
+
+### Built-in Tags
+
+The Go toolchain automatically defines tags based on the build environment:
+
+- **OS**: `linux`, `darwin`, `windows`, `freebsd`, `openbsd`
+- **Architecture**: `amd64`, `arm64`, `386`, `arm`
+- **Minimum Go version**: `go1.21`, `go1.18` — file is included only when building with that version or later
+- **CGO**: `cgo` (when CGO is enabled)
+- **Race detector**: `race` (when building with `-race`)
+
+### Custom Tags
+
+You define custom tags at build time:
+
+```
+go build -tags mytag ./...
+go test -tags integration ./...
+```
+
+In the file:
+
+```go
+//go:build integration
+
+package mypackage
+```
+
+This file only compiles when you pass `-tags integration`. Commonly used for: integration tests that need a real database, build variants (enterprise vs. community editions), platform-specific feature flags.
+
+### The Silent Exclusion Trap
+
+When a build tag condition is false, the file is silently excluded. This includes when you **misspell the tag**:
+
+```go
+//go:build integratoin  // typo — will never be included by -tags integration
+
+package mypackage
+```
+
+The file compiles fine. It's just never included in any build. If it contains a function called by other code, you get a linker error that says the function is missing — and the file containing it is nowhere obvious.
+
+:::warning
+Misspelled build tags silently exclude files. Use `go vet ./...` to catch invalid build tag syntax. As of Go 1.16, `go vet` checks that build constraint expressions are well-formed. Still, a correctly-spelled but wrong tag name won't be caught.
+:::
+
+### File Name Constraints
+
+Go also infers build constraints from file names, without any comment needed:
+
+- `net_linux.go` — only on Linux
+- `arch_amd64.go` — only on AMD64
+- `signal_linux_amd64.go` — only on Linux/AMD64
+- `anything_test.go` — only during `go test`
+
+These naming conventions are checked before the file is even opened. File name constraints take effect in addition to any `//go:build` comment in the file.
+
+### The `ignore` Pattern
+
+To permanently exclude a file from normal builds while keeping it in the repository:
+
+```go
+//go:build ignore
+
+package main
+
+// This is a code generator. Run it with: go run gen.go
+```
+
+Files with `//go:build ignore` are never included in regular builds because the `ignore` tag is never set. They can be run explicitly with `go run gen.go`. This is the standard pattern for standalone generators, example programs, and tools that live alongside the code they operate on.
+
+:::tip
+`go list -f '{{.GoFiles}}' ./...` shows exactly which files are included in the current build, respecting all build tags and file name constraints. Use it to verify that the right files are being compiled.
+:::
+
+### Platform-Specific Code Example
+
+```go
+//go:build windows
+
+package main
+
+import "fmt"
+
+func platformName() string {
+    return "Windows"
+}
+
+func main() {
+    fmt.Println("Running on:", platformName())
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+In a real project, you'd pair this with a `_linux.go` and `_darwin.go` file that each define `platformName()`. The build system selects exactly one based on the target OS — no runtime `if/switch` on operating system strings.
+
+## module replace Directive
+
+The `replace` directive in `go.mod` redirects a module import path to a different location or version. It can redirect to a local directory, a different remote module, or a different version of the same module.
+
+```
+module myapp
+
+go 1.21
+
+require github.com/foo/bar v1.2.3
+
+replace github.com/foo/bar => ./local/bar
+replace github.com/baz/qux v1.0.0 => github.com/myfork/qux v1.0.1
+```
+
+### Use Cases
+
+**Local development of a dependency.** You're developing `myapp` and `mylib` simultaneously. Instead of publishing every change to `mylib` and running `go get`, you redirect the import:
+
+```
+replace github.com/myorg/mylib => ../mylib
+```
+
+Now `go build` uses the local directory. Changes to `../mylib` are immediately visible in `myapp`.
+
+**Patching a transitive dependency.** A transitive dependency has a bug that its maintainer hasn't fixed. You fork it, make the patch, and redirect:
+
+```
+replace github.com/vulnerable/pkg v1.2.0 => github.com/yourfork/pkg v1.2.0-patched
+```
+
+This makes your build use the forked version without changing any import paths in your code.
+
+### The Silent Danger
+
+:::danger
+A replace directive in `go.mod` can redirect any import to entirely different code. If someone adds a malicious or buggy replace directive to your repository, all builds change silently — no import path changes, no compile errors, just different code running. Always review `go.mod` changes carefully, especially in security-sensitive contexts. Treat `go.mod` as executable.
+:::
+
+The other critical rule: **replace directives from dependencies are ignored**. Only the top-level module's `replace` directives take effect. If `mylib` has a `replace` in its `go.mod`, and `myapp` imports `mylib`, `myapp` does not inherit `mylib`'s replace. This is intentional — it prevents library authors from hijacking the dependency graph of applications that use their libraries.
+
+This asymmetry has a practical implication: if you're publishing a library, using `replace` in your `go.mod` for local development is fine — it won't affect your users. But don't commit a local path replace when publishing a release; it won't work for users (their local directory structure differs from yours) and `go mod tidy` in a module that depends on yours will get confused.
+
+### go.sum and Reproducibility
+
+Every module used in a build is recorded in `go.sum` with a cryptographic hash of its content. When you run `go build` or `go test`, Go checks that downloaded modules match the `go.sum` entries. This ensures the build is reproducible and that a module's content hasn't changed.
+
+Running `go mod tidy` re-evaluates the dependency graph, potentially upgrading or downgrading indirect dependencies to satisfy constraints. After `go mod tidy`, always review the diff to `go.mod` and `go.sum` to understand what changed.
+
+```
+go mod tidy           # update go.mod and go.sum
+go mod verify         # verify all modules match go.sum
+go list -m all        # list all modules in the build
+```
+
+## Key Takeaways
+
+- Build tags use `//go:build expr` syntax (Go 1.17+). Boolean operators `&&`, `||`, `!` compose conditions.
+- A false or misspelled build tag silently excludes the file. No error is produced.
+- File name suffixes (`_linux.go`, `_amd64.go`) imply build constraints without comments.
+- `//go:build ignore` permanently excludes a file from normal builds — standard for generators.
+- `go list -f '{{.GoFiles}}' ./...` reveals which files the current build includes.
+- `replace` in `go.mod` redirects a module to a local directory or different version — useful for development and patching, dangerous if misused.
+- replace directives from dependencies are ignored — only the top-level module's replace directives apply.
+- `go.sum` pins module content by hash, ensuring reproducible builds.

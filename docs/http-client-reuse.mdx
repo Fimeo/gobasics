@@ -1,0 +1,391 @@
+---
+sidebar_position: 32
+title: "http.Client Reuse: Why Per-Request Clients Are a Bug"
+description: "Creating a new http.Client per request bypasses connection pooling entirely. Here's what that costs and how to do it right."
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# http.Client Reuse: Why Per-Request Clients Are a Bug
+
+It looks harmless. You need to make an HTTP request, so you write `client := &http.Client{}` and call `client.Get(url)`. The program works. Tests pass. The bug is invisible in development because development traffic is low, latency is forgiving, and no one is measuring TCP connection counts. In production, under real load, this pattern can add hundreds of milliseconds per request and exhaust available ports. This article explains exactly why and how to fix it.
+
+## The Bug: Per-Request Client Creation
+
+Consider this pattern, which appears regularly in Go codebases:
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+)
+
+// BUG: a new client is created for every call.
+// Each &http.Client{} with no Transport field gets a brand-new
+// http.Transport with an empty connection pool.
+func fetchUser(id int) ([]byte, error) {
+	// highlight-next-line
+	client := &http.Client{} // new transport, empty pool, every single time
+	resp, err := client.Get(fmt.Sprintf("https://api.example.com/users/%d", id))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+func main() {
+	data, err := fetchUser(42)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Printf("fetched %d bytes\n", len(data))
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+When `http.Client` is created without an explicit `Transport` field, it uses `http.DefaultTransport` — but only if the Transport field is nil **and** you use the zero value. Actually, `&http.Client{}` with no `Transport` set will use `http.DefaultTransport` for the connection. The real problem is subtler: even if the transport happens to be shared, **each new `http.Client` value is independent**, and patterns that do assign a new transport create an empty pool per client. More importantly, teams that graduate from `&http.Client{}` to `&http.Client{Transport: &http.Transport{}}` — to configure timeouts — create a brand-new, empty pool on every call, guaranteed.
+
+Here is the version that is unambiguously broken:
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"time"
+)
+
+// This is definitively broken: new Transport = new empty pool on every request.
+func fetchWithNewTransport(url string) ([]byte, error) {
+	client := &http.Client{
+		// highlight-next-line
+		Transport: &http.Transport{ // fresh pool, every call — no connection reuse ever
+			DialContext: (&net.Dialer{
+				Timeout: 5 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return nil, nil
+}
+
+func main() {
+	fmt.Println("Each call to fetchWithNewTransport does a full TCP+TLS handshake.")
+	fmt.Println("The transport's connection pool is discarded after each call.")
+}
+```
+
+Every request performs a new TCP handshake (1 round-trip) and, for HTTPS, a new TLS handshake (1–2 additional round-trips). At 50 ms round-trip latency, that is 100–150 ms of overhead per request that should be zero.
+
+:::danger
+`&http.Client{Transport: &http.Transport{...}}` inside a function that is called per-request creates a new connection pool on every call. The pool is garbage-collected after the request completes. No connection is ever reused. Every request pays full TCP and TLS handshake cost. In a service handling thousands of requests per second, this can manifest as high latency, excessive port usage, and upstream servers seeing an unusual volume of new connections.
+:::
+
+## What http.DefaultClient Is — and Why It Is Also Not the Answer
+
+The package-level `http.DefaultClient` is defined as:
+
+```go
+var DefaultClient = &Client{}
+```
+
+And `http.Get`, `http.Post`, `http.Head`, and similar package-level functions call through to it. The zero-value `http.Client` uses `http.DefaultTransport` as its transport, which is a real, shared `*http.Transport` with a live connection pool. So `http.Get(url)` does reuse connections.
+
+The problem with `http.DefaultClient` is not connection pooling — it is timeouts. `http.DefaultTransport` has `TLSHandshakeTimeout: 10 * time.Second` and `IdleConnTimeout: 90 * time.Second`, but no `ResponseHeaderTimeout` and no `http.Client.Timeout`. A server that accepts a connection and then never sends a response will hold a goroutine forever.
+
+:::warning
+`http.DefaultClient` has no request timeout. A single slow upstream can leak goroutines indefinitely. It is acceptable for scripts and one-off programs. It is not acceptable in a long-running server.
+:::
+
+## The Fix: One Client per Service, Created Once
+
+The correct pattern is to create a single, carefully configured `http.Client` (or one per distinct upstream service if they have different timeout requirements) at program startup, and share it across all requests.
+
+<Tabs>
+<TabItem value="wrong" label="Wrong: per-request client">
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"time"
+)
+
+// Called thousands of times per second in production.
+func getPrice(symbol string) (string, error) {
+	// highlight-next-line
+	client := &http.Client{ // BUG: new pool every call
+		Transport: &http.Transport{
+			DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Get("https://prices.example.com/v1/" + symbol)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body), nil
+}
+
+func main() {
+	price, err := getPrice("AAPL")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(price)
+}
+```
+
+</TabItem>
+<TabItem value="right" label="Right: shared client">
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"time"
+)
+
+// highlight-next-line
+var priceClient = &http.Client{ // created once at package initialization
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			// highlight-next-line
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		// highlight-next-line
+		MaxIdleConnsPerHost:   20, // sized for expected concurrency
+		MaxIdleConns:          100,
+	},
+	// highlight-next-line
+	Timeout: 10 * time.Second, // hard ceiling per request
+}
+
+func getPrice(symbol string) (string, error) {
+	// highlight-next-line
+	resp, err := priceClient.Get("https://prices.example.com/v1/" + symbol)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body), nil
+}
+
+func main() {
+	price, err := getPrice("AAPL")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(price)
+}
+```
+
+</TabItem>
+</Tabs>
+
+`http.Client` and `http.Transport` are explicitly documented as safe for concurrent use by multiple goroutines. The entire design of the transport — its connection pool, its idle connection management, its dial locking — is built around concurrent access. You share one client and call it from as many goroutines as you need.
+
+## Per-Request Timeouts with Context
+
+One reason developers create per-request clients is to vary the timeout per call. This is understandable but unnecessary. The correct approach is to use `context.WithTimeout` and pass the context to `http.NewRequestWithContext`. The context timeout applies to that specific request and does not affect other concurrent requests using the same client.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"time"
+)
+
+// highlight-next-line
+var sharedClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConnsPerHost:   50,
+		MaxIdleConns:          200,
+	},
+	// No client-level timeout here — we use per-request context timeouts instead.
+}
+
+func fetchWithTimeout(url string, timeout time.Duration) ([]byte, error) {
+	// highlight-next-line
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// highlight-next-line
+	defer cancel() // always cancel to release context resources
+
+	// highlight-next-line
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+
+	resp, err := sharedClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("executing request: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return nil, nil
+}
+
+func main() {
+	// Critical path: tight 2-second budget.
+	_, err := fetchWithTimeout("https://api.example.com/critical", 2*time.Second)
+	if err != nil {
+		fmt.Println("critical path error:", err)
+	}
+
+	// Background sync: relaxed 30-second budget.
+	_, err = fetchWithTimeout("https://api.example.com/sync", 30*time.Second)
+	if err != nil {
+		fmt.Println("sync error:", err)
+	}
+
+	fmt.Println("both requests used the same shared client and connection pool")
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+The context timeout cancels the request if it exceeds the deadline, but the underlying connection is returned to the pool for future use. This is the correct way to have per-request timeouts without per-request clients.
+
+## The Wrapper Struct Pattern
+
+For production services that call a specific external API, a common and clean pattern is to create a typed API client struct that owns a reused `http.Client` and provides domain-specific methods:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"time"
+)
+
+// PriceClient wraps a shared http.Client with domain-specific methods.
+type PriceClient struct {
+	baseURL    string
+	// highlight-next-line
+	httpClient *http.Client // shared, reused for all calls
+}
+
+type Price struct {
+	Symbol string  `json:"symbol"`
+	Value  float64 `json:"price"`
+}
+
+func NewPriceClient(baseURL string) *PriceClient {
+	return &PriceClient{
+		baseURL: baseURL,
+		// highlight-next-line
+		httpClient: &http.Client{ // created once per PriceClient instance
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   5 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 5 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+				MaxIdleConnsPerHost:   20,
+				MaxIdleConns:          100,
+			},
+			Timeout: 15 * time.Second,
+		},
+	}
+}
+
+func (c *PriceClient) GetPrice(ctx context.Context, symbol string) (*Price, error) {
+	url := fmt.Sprintf("%s/v1/prices/%s", c.baseURL, symbol)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status: %s", resp.Status)
+	}
+
+	var price Price
+	if err := json.NewDecoder(resp.Body).Decode(&price); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return &price, nil
+}
+
+func main() {
+	// One client created at startup, passed wherever needed.
+	client := NewPriceClient("https://prices.example.com")
+
+	ctx := context.Background()
+	price, err := client.GetPrice(ctx, "AAPL")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Printf("%s: $%.2f\n", price.Symbol, price.Value)
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+The `PriceClient` struct owns one `*http.Client`. At program startup, you call `NewPriceClient()` once and store the result in a package-level variable or inject it via dependency injection. All calls to `GetPrice()` — from any goroutine — share the same transport and connection pool.
+
+This pattern also makes testing straightforward: you can replace `httpClient` with a `*http.Client` configured to use an `httptest.Server` or an `http.RoundTripper` mock.
+
+## Key Takeaways
+
+- Creating `&http.Client{Transport: &http.Transport{...}}` inside a function that runs per-request destroys connection pooling. Every request pays the TCP and TLS handshake cost.
+- `http.DefaultClient` reuses connections but has no timeout configured. It is a goroutine leak waiting to happen in a long-running server.
+- Create one `*http.Client` (or one per distinct upstream) at startup. Store it as a package-level variable or in a struct. Reuse it for every request. `http.Client` and `http.Transport` are safe for concurrent use.
+- Use `context.WithTimeout` + `http.NewRequestWithContext` for per-request timeouts. Do not create a new client to change the timeout.
+- The wrapper struct pattern — a typed API client struct that owns a reused `*http.Client` — is the idiomatic production approach. It centralizes transport configuration and provides domain-specific method signatures.

@@ -1,0 +1,431 @@
+---
+sidebar_position: 33
+title: "JSON Encoding Pitfalls: Numbers, interface{}, and Allocations"
+description: "The subtle bugs and performance traps in Go's encoding/json — from number type confusion to the allocation cost of reflection."
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# JSON Encoding Pitfalls: Numbers, interface{}, and Allocations
+
+`encoding/json` is one of the most widely used packages in the Go standard library, and it is also one of the most reliably surprising. The number type confusion that silently corrupts large integers, the `omitempty` behavior that drops legitimate boolean values, the allocation overhead from reflection — each of these is a real production bug waiting to happen if you do not know about it. This article covers the full set of encoding/json traps and how to avoid each one.
+
+## Numbers in JSON Decode to float64 by Default
+
+JSON has a single number type. When Go decodes JSON into an `interface{}`, it has to pick a concrete type to represent that number. The standard library chose `float64`, because `float64` can represent both integers and decimals without needing to inspect the value. This choice is correct for small numbers and completely wrong for large integers.
+
+IEEE 754 `float64` has 53 bits of mantissa. Integers up to 2^53 (9,007,199,254,740,992) are representable exactly. Any integer larger than 2^53 cannot be represented exactly as a `float64` — the value is silently rounded to the nearest representable float. If your API returns a 64-bit database row ID, a Twitter-style snowflake ID, or any other large integer, decoding it into `interface{}` corrupts the value without any error.
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+func main() {
+	// A large int64 that is NOT representable exactly as float64.
+	// 2^53 + 1 = 9007199254740993 — one beyond float64's exact integer range.
+	original := int64(9007199254740993)
+	fmt.Printf("original:  %d\n", original)
+
+	data, _ := json.Marshal(original)
+	fmt.Printf("json:      %s\n", data)
+
+	// Unmarshal into interface{} — the number becomes float64.
+	var v interface{}
+	json.Unmarshal(data, &v)
+
+	// highlight-next-line
+	asFloat := v.(float64) // this is what you get — silently wrong
+	fmt.Printf("as float64: %.0f\n", asFloat)    // 9007199254740992 — off by 1!
+	fmt.Printf("as int64:   %d\n", int64(asFloat)) // 9007199254740992 — corrupted
+	fmt.Printf("equal?      %v\n", original == int64(asFloat)) // false
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+The fix has two forms. The first — and best — is to unmarshal into a concrete struct with the correct field type:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type Record struct {
+	// highlight-next-line
+	ID int64 `json:"id"` // int64 field: the decoder reads the number correctly
+}
+
+func main() {
+	data := []byte(`{"id": 9007199254740993}`)
+
+	var r Record
+	json.Unmarshal(data, &r)
+	fmt.Printf("ID: %d\n", r.ID) // 9007199254740993 — correct
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+The second fix is for cases where you genuinely need to decode into `interface{}` — parsing arbitrary JSON where the schema is not known at compile time. Use `json.Decoder` with `UseNumber()`:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+func main() {
+	data := `{"id": 9007199254740993, "name": "Alice"}`
+
+	dec := json.NewDecoder(strings.NewReader(data))
+	// highlight-next-line
+	dec.UseNumber() // numbers are decoded as json.Number (a string type)
+
+	var v map[string]interface{}
+	dec.Decode(&v)
+
+	// v["id"] is now json.Number, not float64.
+	// highlight-next-line
+	n := v["id"].(json.Number)
+	id, err := n.Int64()
+	fmt.Printf("id: %d, err: %v\n", id, err) // 9007199254740993, <nil>
+
+	// json.Number also works as a string — useful for forwarding without parsing.
+	fmt.Printf("raw: %s\n", n.String())
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+`json.Number` is simply a `string` type alias with `.Int64()`, `.Float64()`, and `.String()` conversion methods. It stores the number exactly as it appeared in the JSON text and only converts when you ask it to, preserving precision.
+
+:::warning
+If your JSON API uses integer IDs larger than 9,007,199,254,740,992 (2^53), they will be silently corrupted when decoded into `interface{}`. Use concrete `int64` struct fields or `json.Decoder.UseNumber()`. This has caused real data corruption in production systems that process large user IDs, order IDs, or event IDs from systems that use 64-bit integers.
+:::
+
+## Pointer Fields and null vs. Empty
+
+A plain `string` field in a struct can hold either an empty string or a non-empty string. It cannot represent "the field was absent from the JSON" versus "the field was present with an empty string value". For most APIs this distinction matters: `""` means "set the name to empty", and a missing field means "leave the name unchanged".
+
+Pointer fields solve this:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type UpdateRequest struct {
+	// highlight-next-line
+	Name  *string `json:"name,omitempty"`  // nil = not present; non-nil = explicitly set
+	Email *string `json:"email,omitempty"`
+}
+
+func strPtr(s string) *string { return &s }
+
+func main() {
+	// Case 1: only updating the name.
+	req1 := UpdateRequest{Name: strPtr("Alice")}
+	b1, _ := json.Marshal(req1)
+	fmt.Println(string(b1)) // {"name":"Alice"} — email omitted because nil
+
+	// Case 2: explicitly setting name to empty string.
+	req2 := UpdateRequest{Name: strPtr("")}
+	b2, _ := json.Marshal(req2)
+	fmt.Println(string(b2)) // {"name":""} — empty string is intentional
+
+	// Case 3: neither field set.
+	req3 := UpdateRequest{}
+	b3, _ := json.Marshal(req3)
+	fmt.Println(string(b3)) // {} — both fields absent
+
+	// Decoding: nil pointer means field was absent.
+	var req4 UpdateRequest
+	json.Unmarshal([]byte(`{"email":"alice@example.com"}`), &req4)
+	fmt.Println(req4.Name == nil)    // true — name not in JSON
+	fmt.Println(*req4.Email)         // alice@example.com
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+A nil `*string` serializes as `null` (or is omitted with `omitempty`). A non-nil `*string` pointing to an empty string serializes as `""`. This three-way distinction — absent, null, empty — maps cleanly to PATCH semantics in REST APIs.
+
+## omitempty Behavior: The bool Trap
+
+`omitempty` omits a field when it holds its zero value: `0` for integers, `false` for booleans, `""` for strings, `nil` for pointers, slices, and maps, and an empty struct literal for structs. This sounds useful until you have a boolean field that legitimately needs to be `false`.
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type FeatureFlag struct {
+	Name    string `json:"name"`
+	// highlight-next-line
+	Enabled bool   `json:"enabled,omitempty"` // BUG: false is omitted
+}
+
+type FeatureFlagFixed struct {
+	Name    string `json:"name"`
+	// highlight-next-line
+	Enabled bool   `json:"enabled"` // no omitempty: false is included
+}
+
+func main() {
+	flag := FeatureFlag{Name: "dark_mode", Enabled: false}
+	b, _ := json.Marshal(flag)
+	fmt.Println(string(b)) // {"name":"dark_mode"} — "enabled" missing entirely!
+
+	flagFixed := FeatureFlagFixed{Name: "dark_mode", Enabled: false}
+	b2, _ := json.Marshal(flagFixed)
+	fmt.Println(string(b2)) // {"name":"dark_mode","enabled":false} — correct
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+The omitted `enabled` field causes the receiver to interpret the absence as "use the default" — which might be `false`, or might be `true`, or might cause a validation error. The serialized value `false` is silently dropped. If you want `false` to be transmitted, do not use `omitempty` on boolean fields.
+
+A subtler case: a non-nil pointer to a zero value is **not** omitted. `omitempty` checks the pointer itself, not what it points to:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type Config struct {
+	Timeout *int `json:"timeout,omitempty"`
+}
+
+func intPtr(v int) *int { return &v }
+
+func main() {
+	zero := 0
+	c := Config{Timeout: &zero}
+	b, _ := json.Marshal(c)
+	// highlight-next-line
+	fmt.Println(string(b)) // {"timeout":0} — non-nil pointer, NOT omitted
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+:::warning
+`omitempty` omits `false` booleans, `0` integers, and empty strings — even when those values are semantically meaningful. Reserve `omitempty` for fields that are genuinely optional and where the zero value carries no information (e.g., an optional cache TTL, an optional description). Do not use it on fields that can legitimately be false/0/"".
+:::
+
+## json.RawMessage for Polymorphic JSON
+
+When part of a JSON document's structure depends on the value of another field — a discriminated union or a variant type — `json.RawMessage` lets you defer parsing of that part:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type Event struct {
+	Type    string          `json:"type"`
+	// highlight-next-line
+	Payload json.RawMessage `json:"payload"` // raw bytes, parsed later
+}
+
+type LoginPayload struct {
+	UserID string `json:"user_id"`
+	IP     string `json:"ip"`
+}
+
+type PurchasePayload struct {
+	OrderID string  `json:"order_id"`
+	Amount  float64 `json:"amount"`
+}
+
+func processEvent(data []byte) error {
+	var event Event
+	if err := json.Unmarshal(data, &event); err != nil {
+		return fmt.Errorf("unmarshal event: %w", err)
+	}
+
+	// highlight-next-line
+	switch event.Type {
+	case "login":
+		var p LoginPayload
+		if err := json.Unmarshal(event.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal login payload: %w", err)
+		}
+		fmt.Printf("login: user=%s ip=%s\n", p.UserID, p.IP)
+	case "purchase":
+		var p PurchasePayload
+		if err := json.Unmarshal(event.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal purchase payload: %w", err)
+		}
+		fmt.Printf("purchase: order=%s amount=%.2f\n", p.OrderID, p.Amount)
+	default:
+		fmt.Printf("unknown event type: %s\n", event.Type)
+	}
+	return nil
+}
+
+func main() {
+	loginEvent := []byte(`{"type":"login","payload":{"user_id":"u123","ip":"192.168.1.1"}}`)
+	purchaseEvent := []byte(`{"type":"purchase","payload":{"order_id":"o456","amount":99.99}}`)
+
+	processEvent(loginEvent)
+	processEvent(purchaseEvent)
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+`json.RawMessage` is just `[]byte`. It is copied verbatim from the JSON input during the first `Unmarshal` call. The second call, inside the switch, parses only the payload portion into the correct concrete type. This avoids having to define a union struct with fields for every possible payload variant, and it keeps each payload's parsing logic isolated.
+
+## Allocation Cost and High-Throughput Alternatives
+
+`encoding/json` uses reflection to inspect struct tags and field types at runtime. Reflection is allocation-heavy and cache-unfriendly. On a modern server, `json.Marshal` of a typical response struct costs several hundred nanoseconds and produces multiple allocations.
+
+<Tabs>
+<TabItem value="marshal" label="Standard json.Marshal">
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type Response struct {
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	Score float64 `json:"score"`
+}
+
+func main() {
+	resp := Response{ID: 1, Name: "Alice", Score: 98.5}
+
+	// json.Marshal allocates a []byte internally.
+	// For high-frequency calls, this allocation appears in heap profiles.
+	b, err := json.Marshal(resp)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(string(b))
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+</TabItem>
+<TabItem value="encoder" label="json.Encoder (one fewer allocation)">
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
+type Response struct {
+	ID    int     `json:"id"`
+	Name  string  `json:"name"`
+	Score float64 `json:"score"`
+}
+
+func main() {
+	resp := Response{ID: 1, Name: "Alice", Score: 98.5}
+
+	// json.Encoder writes directly to an io.Writer, skipping the
+	// intermediate []byte allocation that json.Marshal performs.
+	// Combined with sync.Pool for the bytes.Buffer, this reduces allocations.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // optional: skip HTML escaping if not needed
+
+	// highlight-next-line
+	if err := enc.Encode(resp); err != nil { // writes directly to buf
+		fmt.Println(err)
+		return
+	}
+	fmt.Print(buf.String()) // note: Encode appends a newline
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+</TabItem>
+</Tabs>
+
+`json.Encoder` writes directly to an `io.Writer`, avoiding one allocation relative to `json.Marshal`. When paired with a `sync.Pool`'d `bytes.Buffer`, it can reduce allocation pressure significantly on hot paths.
+
+For services where JSON encoding is a measured bottleneck — confirmed by pprof heap and CPU profiles — third-party libraries offer substantially better performance. `easyjson` generates specialized marshaling code at compile time using `go generate`, eliminating most reflection. `sonic` (from ByteDance) uses SIMD instructions and unsafe tricks for 3–5x throughput on amd64. `jsoniter` is a drop-in replacement for `encoding/json` with better performance and the same API.
+
+:::tip
+Before switching to a third-party JSON library, profile with `go tool pprof` to confirm that JSON encoding is actually a bottleneck. `encoding/json` is often fast enough. When it is not, `easyjson` is the most portable option (it generates standard Go code); `sonic` is the fastest but requires amd64/arm64 and uses `unsafe`.
+:::
+
+## Streaming Large JSON with json.Decoder
+
+For large JSON payloads — log files, bulk API exports, event streams — loading the entire payload into memory before parsing is wasteful. `json.Decoder` reads from an `io.Reader` incrementally:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+type LogEntry struct {
+	Level   string `json:"level"`
+	Message string `json:"msg"`
+}
+
+func main() {
+	// A stream of newline-delimited JSON objects.
+	stream := `{"level":"info","msg":"server started"}
+{"level":"warn","msg":"high memory usage"}
+{"level":"error","msg":"connection refused"}`
+
+	// highlight-next-line
+	dec := json.NewDecoder(strings.NewReader(stream))
+
+	for dec.More() {
+		var entry LogEntry
+		// highlight-next-line
+		if err := dec.Decode(&entry); err != nil {
+			fmt.Println("decode error:", err)
+			return
+		}
+		fmt.Printf("[%s] %s\n", entry.Level, entry.Message)
+	}
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+`dec.More()` returns true while there is more data in the stream. `dec.Decode(&entry)` reads and parses the next complete JSON object. For very large JSON arrays, you can use `dec.Token()` to read token-by-token, which gives full control over memory usage at the cost of more verbose parsing code.
+
+## Key Takeaways
+
+- JSON numbers decoded into `interface{}` become `float64`. Integers larger than 2^53 are silently corrupted. Use concrete struct fields with `int64` type, or use `json.Decoder.UseNumber()` for truly dynamic JSON.
+- Use `*string`, `*int`, `*bool` pointer fields when you need to distinguish between "field absent" and "field set to zero value". A nil pointer serializes as `null`/omitted; a non-nil pointer to a zero value serializes the zero value explicitly.
+- `omitempty` omits `false`, `0`, and `""`. Do not use it on boolean or numeric fields where the zero value is semantically meaningful.
+- `json.RawMessage` defers parsing of a JSON subtree. It is the idiomatic way to handle polymorphic JSON where the structure of one field depends on the value of another.
+- `encoding/json` uses reflection and allocates significantly. For proven bottlenecks, use `json.Encoder` with a pooled buffer to save one allocation, or switch to `easyjson`, `sonic`, or `jsoniter` for 3–5x throughput.
+- `json.Decoder` with `dec.More()` / `dec.Decode()` handles streaming JSON without loading the entire document into memory. Use it for large payloads.

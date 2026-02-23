@@ -1,0 +1,330 @@
+---
+sidebar_position: 34
+title: "Generics in Go: Type Parameters, Constraints, and Instantiation"
+description: "Go 1.18 introduced generics. Here's how type parameters and constraints work, when to use generics, and the performance implications."
+---
+
+# Generics in Go: Type Parameters, Constraints, and Instantiation
+
+Go 1.18 introduced type parameters — commonly called generics — after years of deliberation. The feature lets you write functions and data structures that work across multiple types without sacrificing type safety, duplicating code, or resorting to `interface{}`. Understanding how constraints, type inference, and instantiation work will help you use generics effectively while avoiding the traps of overuse.
+
+## Syntax: Type Parameters
+
+A generic function declares one or more type parameters inside square brackets before the regular parameter list:
+
+```go
+func Min[T constraints.Ordered](a, b T) T {
+    if a < b {
+        return a
+    }
+    return b
+}
+```
+
+`T` is the type parameter. `constraints.Ordered` is the constraint — an interface that specifies what operations `T` must support. The function body can use any operation permitted by the constraint; `<` is permitted by `Ordered`, so the comparison is valid.
+
+## Constraints: What Types Are Allowed
+
+A constraint is just an interface. Go 1.18 extended interface syntax to let interfaces express more than method sets.
+
+**`any`** is an alias for `interface{}`. No constraints at all — the type can be anything. You can only perform operations valid for any type: assign, pass around, use as a value. You cannot compare with `==` unless you also use `comparable`.
+
+**`comparable`** is a built-in constraint meaning the type supports `==` and `!=`. Required for map keys. Note that `comparable` is stricter than you might expect — slices and maps are not comparable even though you can nil-check them.
+
+**`constraints.Ordered`** (from `golang.org/x/exp/constraints`, now informally replicated in the standard library via `cmp.Ordered` in Go 1.21) covers all types that support `<`, `>`, `<=`, `>=`: integers, floats, and strings.
+
+**Custom constraints** combine method sets and union type sets:
+
+```go
+package main
+
+import "fmt"
+
+// Numeric accepts any integer or float type
+type Numeric interface {
+    ~int | ~int8 | ~int16 | ~int32 | ~int64 |
+        ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
+        ~float32 | ~float64
+}
+
+func Sum[T Numeric](values []T) T {
+    var total T
+    for _, v := range values {
+        total += v
+    }
+    return total
+}
+
+func main() {
+    ints := []int{1, 2, 3, 4, 5}
+    floats := []float64{1.1, 2.2, 3.3}
+    fmt.Println(Sum(ints))
+    fmt.Println(Sum(floats))
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+The `~int` syntax means "int or any type whose underlying type is int." If you define `type MyInt int`, `~int` includes `MyInt`. Without the tilde, `int` means exactly `int` — `MyInt` would not satisfy the constraint.
+
+## Type Inference
+
+Go infers type parameters from the function arguments. You rarely need to write the type parameter explicitly:
+
+```go
+package main
+
+import "fmt"
+
+func Min[T interface{ ~int | ~float64 | ~string }](a, b T) T {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func main() {
+// highlight-next-line
+    fmt.Println(Min(3, 7))        // inferred: Min[int]
+    fmt.Println(Min(3.14, 2.71)) // inferred: Min[float64]
+    fmt.Println(Min("apple", "banana")) // inferred: Min[string]
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+Type inference works from the function argument types. When inference is ambiguous or impossible — for instance, when the type parameter only appears in the return type — you must provide it explicitly: `MakeSlice[int](5)`.
+
+## Instantiation and Performance
+
+When you call a generic function with a specific type, the compiler **instantiates** it — creates a concrete version for that type. Go uses a hybrid approach:
+
+- **Stenciling** (similar to C++ templates): for types with distinct pointer shapes, Go may generate separate machine code per type. This gives the best performance.
+- **Dictionary passing**: for types that share a pointer shape, Go generates one code path and passes a runtime dictionary describing the type's operations. This avoids code bloat.
+
+The practical result: Go generics are faster than `interface{}` boxing (no heap allocation for the type assertion), but not always as fast as hand-written specialized code. For hot inner loops over primitive types, the compiler often stencils fully and the overhead is negligible.
+
+## Generic Types: Data Structures
+
+You can make entire types generic, not just functions. This is where generics truly shine — container types that are both reusable and type-safe:
+
+```go
+package main
+
+import "fmt"
+
+type Stack[T any] struct {
+    items []T
+}
+
+func (s *Stack[T]) Push(item T) {
+    s.items = append(s.items, item)
+}
+
+func (s *Stack[T]) Pop() (T, bool) {
+    var zero T
+    if len(s.items) == 0 {
+        return zero, false
+    }
+    n := len(s.items) - 1
+    item := s.items[n]
+    s.items = s.items[:n]
+    return item, true
+}
+
+func (s *Stack[T]) Len() int {
+    return len(s.items)
+}
+
+func main() {
+// highlight-next-line
+    var s Stack[string]
+    s.Push("first")
+    s.Push("second")
+    s.Push("third")
+
+    for s.Len() > 0 {
+        item, _ := s.Pop()
+        fmt.Println(item)
+    }
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+`Stack[T any]` works with any element type. The type parameter `T` appears in method signatures as part of the receiver `Stack[T]`. Before generics, you either wrote a `[]interface{}` stack (losing type safety) or generated a separate stack type for each element type (code generation).
+
+## Generic Functions Over Slices
+
+The classic functional primitives — Map, Filter, Reduce — become straightforward with generics:
+
+```go
+package main
+
+import "fmt"
+
+func Map[T, U any](slice []T, f func(T) U) []U {
+    result := make([]U, len(slice))
+    for i, v := range slice {
+        result[i] = f(v)
+    }
+    return result
+}
+
+func Filter[T any](slice []T, pred func(T) bool) []T {
+    var result []T
+    for _, v := range slice {
+        if pred(v) {
+            result = append(result, v)
+        }
+    }
+    return result
+}
+
+func main() {
+    nums := []int{1, 2, 3, 4, 5, 6}
+
+    doubled := Map(nums, func(n int) int { return n * 2 })
+    fmt.Println("doubled:", doubled)
+
+    evens := Filter(nums, func(n int) bool { return n%2 == 0 })
+    fmt.Println("evens:", evens)
+
+    strs := Map(nums, func(n int) string { return fmt.Sprintf("#%d", n) })
+    fmt.Println("strings:", strs)
+}
+```
+
+Note that `Map` uses two type parameters: `T` for input elements and `U` for output elements. Type inference handles both — you never write `Map[int, string](...)`.
+
+## The slices and maps Packages (Go 1.21)
+
+Go 1.21 added the `slices` and `maps` packages to the standard library, built on generics. These replace most hand-rolled slice and map utilities:
+
+- `slices.Sort(s)` — sorts any slice of ordered elements
+- `slices.Contains(s, v)` — checks membership
+- `slices.Index(s, v)` — returns the index of first occurrence
+- `maps.Keys(m)` — returns all keys of a map
+- `maps.Clone(m)` — shallow-copies a map
+
+:::tip
+The `slices` and `maps` packages in Go 1.21 replace many hand-rolled generic utilities. Before writing your own `Contains` or `Keys` function, check whether the standard library already provides it.
+:::
+
+## Before and After: Type Safety with generics
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+<Tabs>
+<TabItem value="before" label="Before generics (interface{})">
+
+```go
+package main
+
+import "fmt"
+
+// Untyped stack — accepts anything, returns interface{}
+type Stack struct {
+    items []interface{}
+}
+
+func (s *Stack) Push(item interface{}) {
+    s.items = append(s.items, item)
+}
+
+func (s *Stack) Pop() interface{} {
+    if len(s.items) == 0 {
+        return nil
+    }
+    n := len(s.items) - 1
+    item := s.items[n]
+    s.items = s.items[:n]
+    return item
+}
+
+func main() {
+    var s Stack
+    s.Push(42)
+    s.Push("oops") // compiles fine — but shouldn't be here
+
+    // Must type-assert every value retrieved
+    val := s.Pop()
+    if str, ok := val.(string); ok {
+        fmt.Println("string:", str)
+    }
+    val2 := s.Pop()
+    if n, ok := val2.(int); ok {
+        fmt.Println("int:", n)
+    }
+}
+```
+
+</TabItem>
+<TabItem value="after" label="With generics (type-safe)">
+
+```go
+package main
+
+import "fmt"
+
+// Typed stack — compile-time type safety
+type Stack[T any] struct {
+    items []T
+}
+
+func (s *Stack[T]) Push(item T) {
+    s.items = append(s.items, item)
+}
+
+func (s *Stack[T]) Pop() (T, bool) {
+    var zero T
+    if len(s.items) == 0 {
+        return zero, false
+    }
+    n := len(s.items) - 1
+    item := s.items[n]
+    s.items = s.items[:n]
+    return item, true
+}
+
+func main() {
+    var s Stack[int]
+    s.Push(42)
+    // s.Push("oops") // compile error: cannot use "oops" (string) as int
+
+    val, ok := s.Pop()
+    if ok {
+        fmt.Println("int:", val) // val is already int — no assertion needed
+    }
+}
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use Generics
+
+Use generics when you are writing:
+
+- **Container types** — stack, queue, set, ordered map, ring buffer. The contained type shouldn't restrict the container's behavior.
+- **Slice/map utilities** — functions that operate on collections of any element type: Map, Filter, Reduce, Contains, GroupBy.
+- **Functions that currently use `interface{}`** — if you find yourself type-asserting immediately after receiving an `interface{}`, a type parameter is probably clearer.
+- **Code generation replacements** — if you currently generate typed code per type (e.g., with `go generate`), generics often eliminate the need.
+
+:::warning
+Don't reach for generics for every abstraction. Interfaces are still the right tool for behavioral polymorphism — when you care about what a type *can do*, not what it *is*. If you have a `Logger` interface with `Log(msg string)`, any type implementing it works. That's interface polymorphism. Generics are for type polymorphism — when the specific type matters but the behavior is the same across types.
+:::
+
+## When NOT to Use Generics
+
+- **When a plain interface works fine**: `io.Reader`, `http.Handler`, `fmt.Stringer` are all satisfied by many types. No generics needed — behavioral polymorphism is the right abstraction.
+- **Simple functions without repetition**: if you're writing `Abs` for just `float64`, write it for `float64`. Only generify when you have actual duplication.
+- **When you use reflection inside the body**: if your function body calls `reflect.TypeOf` or `reflect.ValueOf`, the constraint is effectively `any` and generics buy nothing over `interface{}`.
+
+## Key Takeaways
+
+- Type parameters go in `[T Constraint]` brackets before the argument list. Constraints are interfaces.
+- `~T` in a constraint means "T or any type with T as its underlying type."
+- Go infers type parameters from arguments — explicit type arguments are rarely needed.
+- Instantiation creates concrete code per type; Go uses stenciling for distinct pointer shapes and dictionary passing otherwise.
+- Generic types (structs) work the same way as generic functions.
+- The `slices` and `maps` packages (Go 1.21) provide standard generic utilities for collections.
+- Use generics for container types and collection utilities; use interfaces for behavioral polymorphism.

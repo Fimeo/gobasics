@@ -1,0 +1,370 @@
+---
+sidebar_position: 37
+title: "Embedding vs Inheritance: Promotion, Ambiguity, and Zero Values"
+description: "Go has no inheritance, but embedding provides method and field promotion. Here's exactly how it works, when it's useful, and the traps to avoid."
+---
+
+# Embedding vs Inheritance: Promotion, Ambiguity, and Zero Values
+
+Go has no classes and no inheritance. Instead, it has embedding — a mechanism for composing types by including one inside another. Embedding promotes methods and fields from the embedded type to the outer type, achieving code reuse without the fragile-base-class problems of inheritance. Understanding exactly what embedding does — and does not — do is essential for writing idiomatic Go.
+
+## What Embedding Is
+
+Embedding means including a type inside a struct without giving it a field name. The type name itself acts as both the field name and the type:
+
+```go
+package main
+
+import "fmt"
+
+type Animal struct {
+    Name string
+}
+
+func (a Animal) Sound() string {
+    return "..."
+}
+
+func (a Animal) Describe() string {
+    return fmt.Sprintf("%s says %s", a.Name, a.Sound())
+}
+
+// Dog embeds Animal — no field name, just the type
+type Dog struct {
+    Animal
+    Breed string
+}
+
+func main() {
+// highlight-next-line
+    d := Dog{Animal: Animal{Name: "Rex"}, Breed: "Labrador"}
+
+    // Promoted fields and methods — access directly on Dog
+    fmt.Println(d.Name)       // promoted from Animal
+    fmt.Println(d.Sound())    // promoted from Animal
+    fmt.Println(d.Describe()) // promoted from Animal
+    fmt.Println(d.Breed)      // Dog's own field
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+`d.Name` and `d.Sound()` work because they are promoted. The compiler translates `d.Name` to `d.Animal.Name` automatically. There is no copying or vtable — it's purely a syntactic convenience at compile time.
+
+## It's Composition, Not Inheritance
+
+This is the critical distinction. Embedding does not create an "is-a" relationship in Go's type system. `Dog` is not an `Animal` as far as the compiler is concerned.
+
+```go
+package main
+
+import "fmt"
+
+type Animal struct{ Name string }
+
+type Dog struct{ Animal }
+
+func feedAnimal(a Animal) {
+    fmt.Println("feeding", a.Name)
+}
+
+func main() {
+    d := Dog{Animal: Animal{Name: "Buddy"}}
+    // feedAnimal(d) // compile error: cannot use d (type Dog) as type Animal
+    feedAnimal(d.Animal) // must access the embedded field explicitly
+}
+```
+
+You cannot pass a `Dog` to a function expecting `Animal`. You must extract the embedded value: `d.Animal`. This is intentional. Go avoids implicit upcasting and the Liskov substitution problems that come with deep inheritance hierarchies.
+
+## Interface Satisfaction via Embedding
+
+Where embedding does create a meaningful relationship is with interfaces. If `Animal` satisfies an interface, and `Dog` embeds `Animal`, then `Dog` also satisfies that interface — because the promoted methods become part of `Dog`'s method set.
+
+```go
+package main
+
+import "fmt"
+
+type Speaker interface {
+    Sound() string
+}
+
+type Animal struct{ Name string }
+
+func (a Animal) Sound() string { return "generic sound" }
+
+type Dog struct{ Animal }
+
+func (d Dog) Sound() string { return "woof" } // Dog overrides Sound
+
+func makeNoise(s Speaker) {
+    fmt.Println(s.Sound())
+}
+
+func main() {
+    a := Animal{Name: "Animal"}
+    d := Dog{Animal: Animal{Name: "Rex"}}
+
+// highlight-next-line
+    makeNoise(a) // Animal satisfies Speaker
+// highlight-next-line
+    makeNoise(d) // Dog satisfies Speaker — uses Dog's Sound(), not Animal's
+}
+```
+
+`Dog` satisfies `Speaker` because it has a `Sound() string` method — either its own or promoted from the embedded `Animal`. When `Dog` defines its own `Sound()`, that method takes priority.
+
+## Method Shadowing
+
+When the outer type defines a method with the same name as an embedded type's method, the outer method shadows the embedded one. The embedded method still exists; you access it via the embedded field name:
+
+```go
+package main
+
+import "fmt"
+
+type Animal struct{ Name string }
+
+func (a Animal) Sound() string { return "..." }
+
+type Dog struct{ Animal }
+
+func (d Dog) Sound() string { return "woof" }
+
+func main() {
+    d := Dog{Animal: Animal{Name: "Rex"}}
+
+    fmt.Println(d.Sound())        // "woof" — Dog's method
+// highlight-next-line
+    fmt.Println(d.Animal.Sound()) // "..." — Animal's method accessed directly
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+Shadowing does not break the embedded method; it just makes you be explicit when you need the underlying one.
+
+## Ambiguity: Two Embedded Types, Same Name
+
+If two embedded types both have a method or field with the same name at the same embedding depth, accessing that name on the outer type is a compile error:
+
+```go
+package main
+
+type A struct{}
+type B struct{}
+
+func (A) Hello() string { return "from A" }
+func (B) Hello() string { return "from B" }
+
+type C struct {
+    A
+    B
+}
+
+func main() {
+    c := C{}
+    // c.Hello() // compile error: ambiguous selector c.Hello
+    _ = c.A.Hello() // explicit — fine
+    _ = c.B.Hello() // explicit — fine
+}
+```
+
+To resolve the ambiguity, define `Hello()` on `C` itself, which shadows both:
+
+```go
+func (c C) Hello() string { return c.A.Hello() } // delegates to A
+```
+
+The rule is: the shallowest depth wins. If `C` has its own `Hello`, it's at depth 0. `A.Hello` and `B.Hello` are at depth 1. Depth 0 always wins. If two methods are at the same depth with the same name — as in the example above — the selector is ambiguous and is a compile error.
+
+## Zero Values
+
+Because embedding is just a named field (with the type name as the field name), the embedded type is zero-initialized when the outer type is zero-initialized. This is safe and predictable:
+
+```go
+package main
+
+import "fmt"
+
+type Config struct {
+    Debug   bool
+    Timeout int
+}
+
+type Server struct {
+    Config
+    Port int
+}
+
+func main() {
+    var s Server // zero value
+    fmt.Println(s.Debug)   // false — zero value of bool
+    fmt.Println(s.Timeout) // 0 — zero value of int
+    fmt.Println(s.Port)    // 0
+}
+```
+
+There is no nil pointer to dereference. The embedded `Config` is a value, not a pointer — it exists within the `Server` struct's memory.
+
+## Embedding Interfaces in Structs
+
+A struct can embed an interface. This is a different pattern with a specific use case: it makes the struct satisfy the interface at compile time, even if the struct doesn't implement all methods. At runtime, the embedded interface field must be non-nil for any call to go through it.
+
+This pattern is powerful for **testing mocks**. Instead of implementing every method of a large interface, embed the interface and only implement the methods your test needs:
+
+```go
+package main
+
+import (
+    "fmt"
+    "net/http"
+)
+
+// Only implement the method we care about in tests
+type mockResponseWriter struct {
+// highlight-next-line
+    http.ResponseWriter // embedded — satisfies the interface at compile time
+    body               []byte
+    code               int
+}
+
+func (m *mockResponseWriter) Write(b []byte) (int, error) {
+    m.body = append(m.body, b...)
+    return len(b), nil
+}
+
+func (m *mockResponseWriter) WriteHeader(code int) {
+    m.code = code
+}
+
+func myHandler(w http.ResponseWriter, r *http.Request) {
+    w.WriteHeader(200)
+    fmt.Fprintf(w, "hello, world")
+}
+
+func main() {
+    mock := &mockResponseWriter{}
+    myHandler(mock, nil)
+    fmt.Println("status:", mock.code)
+    fmt.Println("body:", string(mock.body))
+}
+```
+<codapi-snippet sandbox="go" editor="basic"></codapi-snippet>
+
+`mockResponseWriter` embeds `http.ResponseWriter`, so it satisfies the interface. Any method not explicitly implemented on `mockResponseWriter` delegates to the embedded `ResponseWriter` field — but since that field is nil, calling an unimplemented method will panic at runtime. In tests, this is acceptable: you only call the methods you've implemented.
+
+:::tip
+Embedding an interface in a struct is a powerful testing pattern. Implement only the methods you need for a given test, and leave the rest to panic if called — those panics tell you when a test exercises code paths you didn't account for.
+:::
+
+## Embedding in Interfaces
+
+Interface embedding is standard Go for composing interfaces:
+
+```go
+type Reader interface {
+    Read(p []byte) (n int, err error)
+}
+
+type Writer interface {
+    Write(p []byte) (n int, err error)
+}
+
+// ReadWriter composes both — any type implementing both Reader and Writer satisfies ReadWriter
+type ReadWriter interface {
+    Reader
+    Writer
+}
+```
+
+This is the canonical way to build larger interfaces from smaller ones. `io.ReadWriter`, `io.ReadWriteCloser`, `io.ReadWriteSeeker` all use this pattern.
+
+## Embedding vs Named Field: When Each Is Appropriate
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+<Tabs>
+<TabItem value="embedding" label="Embedding (promote the API)">
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+// SafeMap promotes sync.Mutex's Lock/Unlock to its API surface.
+// This is intentional — callers lock and unlock the map directly.
+type SafeMap struct {
+    sync.Mutex
+    data map[string]int
+}
+
+func (m *SafeMap) Set(k string, v int) {
+    m.Lock()
+    defer m.Unlock()
+    m.data[k] = v
+}
+
+func main() {
+    m := SafeMap{data: make(map[string]int)}
+    m.Set("count", 42)
+    fmt.Println(m.data["count"])
+}
+```
+
+Use embedding when you want the embedded type's API to become part of your type's API. The caller can call `m.Lock()` directly.
+
+</TabItem>
+<TabItem value="named" label="Named field (hide the implementation)">
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+// SafeMap hides the mutex — it's an implementation detail, not part of the API.
+type SafeMap struct {
+    mu   sync.Mutex  // named field — not promoted
+    data map[string]int
+}
+
+func (m *SafeMap) Set(k string, v int) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    m.data[k] = v
+}
+
+func main() {
+    m := SafeMap{data: make(map[string]int)}
+    m.Set("count", 42)
+    // m.Lock() // compile error — mu is not promoted
+    fmt.Println(m.data["count"])
+}
+```
+
+Use a named field when the inner type is an implementation detail. Callers should not call `m.Lock()` directly — that's the type's job.
+
+</TabItem>
+</Tabs>
+
+:::warning
+Embedding creates API surface that may be unintentional. When you embed a type, all its exported methods and fields become accessible on the outer type. If the embedded type adds new methods in a future version, those methods appear on your type too — potentially breaking callers or causing ambiguity. Only embed when you genuinely want to expose the embedded type's entire API.
+:::
+
+## Key Takeaways
+
+- Embedding includes a type without a field name. The type name becomes the field name.
+- Promoted fields and methods are accessible directly on the outer type — the compiler rewrites the access.
+- Embedding is composition, not inheritance. A `Dog` is not an `Animal` for type-checking purposes.
+- If `Animal` satisfies an interface, `Dog` (which embeds `Animal`) also satisfies that interface via promoted methods.
+- Method shadowing: the outer type's method takes priority; access the embedded method explicitly via `d.Animal.Method()`.
+- Ambiguous selectors (same name at same depth from two embeddings) are compile errors; resolve by defining the method on the outer type.
+- The embedded type is zero-initialized; there is no nil pointer risk with value embedding.
+- Embedding an interface in a struct satisfies the interface at compile time — useful for test mocks where you implement only needed methods.
+- Use a named field instead of embedding when the inner type is an implementation detail, not part of the public API.
